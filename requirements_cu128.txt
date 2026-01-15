@@ -1,0 +1,4 @@
+# PyTorch (CUDA 12.8 / cu128)
+torch
+torchvision
+torchaudio

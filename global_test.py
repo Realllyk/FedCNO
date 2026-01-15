@@ -44,41 +44,59 @@ def global_test(model, dataloader, criterion, args, method, reduction='mean'):
     #     str(args.noise_rate),
     #     f"{method}_{args.cbgru_net1}_{args.cbgru_net2}",
     # )
+    # Old result path logic (commented out)
+    # result_path = Path(os.path.realpath(__file__)).parents[0].joinpath(
+    #     '4_client_result',
+    #     str(args.noise_rate),
+    #     args.model_type,
+    #     method,
+    # )
+    
+    # New result path: graduate_result/labName/model_type/noise_type/noise_rate
+    lab_name = getattr(args, 'lab_name', 'default_lab')
+    noise_rate_str = str(args.noise_rate)
+    
+    # Handle pure noise type specifically if needed, otherwise use args.noise_type
+    # Assuming 'pure' noise type might not use noise_rate, but keeping structure consistent
+    current_noise_type = args.noise_type
+    
     result_path = Path(os.path.realpath(__file__)).parents[0].joinpath(
-        '4_client_result',
-        str(args.noise_rate),
+        'graduate_result',
+        lab_name,
         args.model_type,
-        method,
+        current_noise_type,
+        noise_rate_str
     )
     
     Path.mkdir(result_path, parents=True, exist_ok=True)
-    if args.noise_type == 'non_noise':
-        if args.valid_frac == 1.0:
-            result_file_path = result_path.joinpath(f'{args.vul}_result.json')
-        else:
-            result_file_path = result_path.joinpath(f'{args.vul}_test_{args.valid_frac}_result.json')
-    elif args.noise_type == 'fn_noise':
-        if args.valid_frac == 1.0:
-            result_file_path = result_path.joinpath(f'fn_{args.vul}_result.json')
-        else:
-            result_file_path = result_path.joinpath(f'fn_{args.vul}_test_{args.valid_frac}_result.json')
-    elif args.noise_type == 'diff_noise':
-        result_file_path = result_path.joinpath(f'diff_{args.vul}_result.json')
-    elif args.noise_type == 'sys_noise':
-        result_file_path = result_path.joinpath(f'sys_{args.vul}_result.json')
+    
+    # Filename construction based on vulnerability and validation fraction
+    if args.valid_frac == 1.0:
+        file_name = f'{args.vul}_result.json'
     else:
-        # result_path = Path(os.path.realpath(__file__)).parents[0].joinpath(
-        #     'merge_result',
-        #     'pure',
-        #     f"{method}_{args.cbgru_net1}_{args.cbgru_net2}",
-        # )
-        result_path = Path(os.path.realpath(__file__)).parents[0].joinpath(
-            '4_client_result',
-            'pure',
-            f"{method}_{args.cbgru_net1}_{args.cbgru_net2}",
-        )
-        os.makedirs(result_path, exist_ok=True)
-        result_file_path = result_path.joinpath(f'{args.vul}_result.json')
+        file_name = f'{args.vul}_test_{args.valid_frac}_result.json'
+        
+    # Special handling for different noise types in filename (if still needed)
+    # The previous logic prefixed filenames with 'fn_', 'diff_', 'sys_'.
+    # Since we now separate by directory (noise_type), we might not strictly need the prefix,
+    # but keeping it for clarity if the user wants to maintain file naming conventions within the folder.
+    # However, the user request specified folder structure clearly, but not filename changes.
+    # Let's keep the filename simple as requested implicitly by the folder structure, 
+    # OR maintain the prefixes to avoid confusion if multiple runs end up in the same folder 
+    # (though directory structure seems to separate them well).
+    
+    # Let's stick to the previous filename prefixes to be safe and consistent with previous logic,
+    # just in case 'noise_type' argument doesn't capture everything or for backward compatibility of reading.
+    if args.noise_type == 'fn_noise':
+        file_name = f'fn_{file_name}'
+    elif args.noise_type == 'diff_noise':
+        file_name = f'diff_{file_name}'
+    elif args.noise_type == 'sys_noise':
+        file_name = f'sys_{file_name}'
+    # For 'pure' or 'non_noise', the prefix was empty or handled by 'pure' folder logic previously.
+    # Now 'pure' is just another noise_type folder.
+    
+    result_file_path = result_path.joinpath(file_name)
         
     if os.path.exists(result_file_path):
         with open(result_file_path, 'r', encoding='utf-8') as file:

@@ -10,6 +10,7 @@ from models.ClassiFilerNet import ClassiFilerNet
 from trainers.server import LGV_server
 from trainers.client import Fed_LGV_client
 from global_test import global_test
+import time
 
 
 if __name__ == '__main__':
@@ -37,6 +38,8 @@ if __name__ == '__main__':
     
     # initialize Client
     clients = []
+    run_timestamp = time.strftime("%Y%m%d_%H%M%S")
+
     for i in range(args.client_num):
         client = Fed_LGV_client(
             args,
@@ -44,7 +47,8 @@ if __name__ == '__main__':
             copy.deepcopy(server.global_model),
             train_ds[i],
             i,
-            server.global_weight
+            server.global_weight,
+            run_timestamp=run_timestamp
         )
         client.get_local_knn_labels(args.vul, args.noise_type, args.noise_rate)
         # client.get_global_knn_labels(args.vul, args.noise_type, args.noise_rate)

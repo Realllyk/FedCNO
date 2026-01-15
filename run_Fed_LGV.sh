@@ -18,7 +18,8 @@ do
         # 对每个噪声值运行五次
         for i in {1..10}
         do
-            python Fed_LGV.py --vul $vul --noise_type non_noise --noise_rate $noise_rate --epoch 30 --warm_up_epoch 25 --device "$device" --batch 8  --random_noise --global_weight 0.75 --num_neigh "$num_neigh" --lab_name Fed_LGV --model_type CBGRU --diff --consistency_score
+            # python Fed_LGV.py --vul $vul --noise_type non_noise --noise_rate $noise_rate --epoch 30 --warm_up_epoch 25 --device "$device" --batch 8  --random_noise --global_weight 0.75 --num_neigh "$num_neigh" --lab_name Fed_LGV --model_type CBGRU --diff --consistency_score
+            python Fed_LGV.py --vul $vul --noise_type non_noise --noise_rate $noise_rate --epoch 30 --warm_up_epoch 25 --batch 8  --random_noise --global_weight 0.75 --num_neigh "$num_neigh" --lab_name Fed_LGV --model_type CBGRU --diff --consistency_score
             # python Fed_LGV.py --vul $vul --noise_type sys_noise --noise_rate $noise_rate --epoch 45 --warm_up_epoch 30 --device "$device" --batch 4  --random_noise --global_weight 0.65 --lab_name new_feature_Fed_LGV --model_type CGE 
             # python Fed_LGV.py --vul $vul --noise_type non_noise --noise_rate $noise_rate --epoch 25  --warm_up_epoch 50 --device "$device"  --random_noise --global_weight "$gw"  --lab_name label_Fed_LGV --model_type CGE 
         done

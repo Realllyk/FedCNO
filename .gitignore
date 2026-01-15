@@ -2,3 +2,6 @@
 data
 merge_result
 __pycache__
+runs/
+run_fedlgv.ps1
+graduate_result/

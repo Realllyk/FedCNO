@@ -2,11 +2,13 @@ import gc
 import torch
 import numpy as np
 import copy
+import time
 import sys
 import pandas as pd
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.tensorboard import SummaryWriter
 from data_processing.preprocessing import vec2one, reduced_name_labels, read_pretrain_feature, relabel_with_pretrained_knn
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import confusion_matrix
@@ -125,6 +127,9 @@ class Fed_Avg_client(object):
                 del x1, x2, y, outputs, loss
                 torch.cuda.empty_cache()
                 gc.collect()
+            
+            # self.tb_writer.add_scalar("loss/train", self.result['loss'], self.tb_global_step)
+            # self.tb_global_step += 1
 
 
 class Fed_PLE_client(object):
@@ -443,7 +448,8 @@ class Fed_LGV_client(object):
         model,
         dataset,
         client_id,
-        global_weight
+        global_weight,
+        run_timestamp=None
     ):
         self.args = args
         self.criterion = criterion
@@ -452,16 +458,35 @@ class Fed_LGV_client(object):
         self.client_id = client_id
         self.device = args.device
         self.global_weight = global_weight
+        # Use a safe log_dir even if args lacks lab_name
+        lab_name = getattr(self.args, 'lab_name', 'default')
+        # Use formatted timestamp to separate runs while keeping history
+        if run_timestamp is None:
+            import time
+            run_timestamp = time.strftime("%Y%m%d_%H%M%S")
+        self.tb_writer = SummaryWriter(log_dir=f"./runs/{lab_name}/{run_timestamp}/client_{self.client_id}")
+        self.tb_global_step = 0
 
 
     def get_local_knn_labels(self, vul, noise_type, noise_rate):
+        # -------------------------------------------------------------------------
+        # 初始化：生成本地视图 (Local View)
+        # -------------------------------------------------------------------------
+        # 该方法在训练开始前调用一次，利用本地的静态预训练特征（如 Word2Vec/FastText）
+        # 来建立初始的标签概率分布和一致性基准。
+        
         pre_feature_dir = f"./data/pretrain_feature/{vul}"
         # name_path = f"./data/client_split/{vul}/client_{self.client_id}/cbgru_contract_name_train.txt"
         name_path = f"./data/4_client_split/{vul}/client_{self.client_id}/contract_name_train.txt"
         labels = self.dataset.labels
 
+        # 读取数据和预训练特征
         reduced_names, reduced_labels = reduced_name_labels(name_path, labels)
         pre_features = read_pretrain_feature(reduced_names, pre_feature_dir)
+        
+        # 运行 KNN 获取初始概率和一致性
+        # - prob_relabels: 本地特征视角下的标签概率。
+        # - agreement_ratios: 本地特征视角下的样本一致性。
         relabels, prob_relabels, agreement_ratios = relabel_with_pretrained_knn(reduced_labels, pre_features, 2, 'uniform', self.args.num_neigh, 0.15)
         
         # Reduced probabilities, need to fullfill for the whole ds
@@ -480,8 +505,11 @@ class Fed_LGV_client(object):
                 full_agr.append(name_agr[name])
                 full_prob.append(name_prob[name])
         
+        # 保存本地概率分布，这部分在后续训练中保持静态，作为先验知识 (Prior Knowledge)
         full_prob = np.array(full_prob, dtype=np.float32)
         self.local_prob_labels = torch.tensor(full_prob, dtype=torch.float32).to(self.device)
+        
+        # 初始化数据集的一致性比率
         self.dataset.set_ag_rt(full_agr)
 
     # 使用全局模型直接生成概率标签
@@ -585,35 +613,45 @@ class Fed_LGV_client(object):
         self.global_prob_labels = torch.tensor(full_prob, dtype=torch.float32).to(self.args.device)
 
     # 使用全局模型，并使用全局模型生成的特征合和标签一起进行knn
-    def get_global_feature_glbal_knn_labels(self):
+    def get_global_feature_global_knn_labels(self):
+        # Update reduced dataset with latest labels before KNN
+        self.gen_reduced_ds()
+        
         dl = DataLoader(self.reduced_ds, batch_size=self.args.batch, shuffle=False)
         outputs_list = []
-        output_labels = []
+        
         with torch.no_grad():
             self.model.eval()
             for x1, x2, y, _ in dl:
                 x1, x2, y = x1.to(self.device), x2.to(self.device), y.to(self.device)
                 outputs = self.model(x1, x2)
-                # outputs_list.append(outputs)
                 outputs_list.append(self.model.inter_outputs)
-                output_labels.append(torch.argmax(outputs, dim=-1))
         
-        global_labels = torch.cat(output_labels)
         conc_outputs = torch.cat(outputs_list, dim=0)
-        global_labels = global_labels.cpu().numpy()
         conc_outputs = conc_outputs.cpu().numpy()
-        relabels, prob_relabels, _ = relabel_with_pretrained_knn(self.reduced_ds.labels, conc_outputs, 2, 'uniform', self.args.num_neigh, 0.15)
+        
+        # Use updated reduced_ds labels
+        relabels, prob_relabels, agreement_ratios = relabel_with_pretrained_knn(
+            self.reduced_ds.labels, conc_outputs, 2, 'uniform', self.args.num_neigh, 0.15
+        )
 
         name_prob = dict()
+        name_agr = dict()
         for i, name in enumerate(self.reduced_ds.names):
             name_prob[name] = prob_relabels[i]
+            name_agr[name] = agreement_ratios[i]
 
         full_prob = list()
+        full_agr = list()
         for name in self.dataset.names:
             full_prob.append(name_prob[name])
+            full_agr.append(name_agr[name])
 
         full_prob = np.array(full_prob, dtype=np.float32)
         self.global_prob_labels = torch.tensor(full_prob, dtype=torch.float32).to(self.args.device)
+        
+        # Update agreement ratio for the dataset
+        self.dataset.set_ag_rt(full_agr)
 
     def warmup_train(self):
         dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True)
@@ -644,6 +682,7 @@ class Fed_LGV_client(object):
                 del x1, x2, y, outputs, loss
                 torch.cuda.empty_cache()
                 gc.collect()
+                
 
     def train(self):
         # generate probability labels
@@ -695,6 +734,9 @@ class Fed_LGV_client(object):
                 del x1, x2, y, outputs, loss
                 torch.cuda.empty_cache()
                 gc.collect()
+
+            self.tb_writer.add_scalar("loss/train", self.result['loss'], self.tb_global_step)
+            self.tb_global_step += 1
     
     def get_parameters(self):
         return self.model.state_dict()
@@ -704,8 +746,8 @@ class Fed_LGV_client(object):
 
 
 class Fed_LGV_GKNN_client(Fed_LGV_client):
-    def __init__(self, args, criterion, model, dataset, client_id, global_weight):
-        super().__init__(args, criterion, model, dataset, client_id, global_weight)
+    def __init__(self, args, criterion, model, dataset, client_id, global_weight, run_timestamp=None):
+        super().__init__(args, criterion, model, dataset, client_id, global_weight, run_timestamp)
 
     def get_global_knn_labels(self, vul, noise_type, noise_rate):
         pass
