@@ -40,7 +40,19 @@ if __name__ == '__main__':
     # 服务器负责维护全局模型 (Global Model) 并协调各客户端的训练。
     # - model_type: 支持 'CBGRU' 或 'CGE' 等不同模型架构。
     # - global_weight: 控制 LGV 算法中全局视图概率的权重。
-    class_weights = torch.tensor([2.0, 1.0]).to(args.device)
+    # 动态调整类别权重 (Class Weighting)
+    # 根据漏洞类型 (args.vul) 设置不同的权重策略：
+    # 1. reentrancy (重入漏洞): 数据分布可能较均衡，或者需要轻微的权重调整，使用 [1.0, 1.0] (不加权) 或 [1.0, 1.2]。
+    # 2. timestamp (时间戳依赖): 存在严重的漏报 (High FNR)，需要大幅提高 Positive 权重，使用 [1.0, 2.0]。
+    # 3. 其他类型: 默认使用 [1.0, 1.0] 或 [1.0, 1.5] 作为保守策略。
+    
+    if args.vul == 'reentrancy':
+        class_weights = torch.tensor([1.0, 1.0]).to(args.device) # 重入漏洞暂时不加权，或者微调
+    elif args.vul == 'timestamp':
+        class_weights = torch.tensor([1.0, 2.0]).to(args.device) # 时间戳漏洞严重漏报，加大Positive权重
+    else:
+        class_weights = torch.tensor([1.0, 1.0]).to(args.device) # 默认情况
+
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     if args.model_type == "CBGRU":
         global_model = ClassiFilerNet(input_size, time_steps)

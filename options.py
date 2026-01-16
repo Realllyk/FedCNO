@@ -313,5 +313,12 @@ def parse_args():
         help='whether use consistency score'
     )
 
+    parser.add_argument(
+        '--weight_decay',
+        type=float,
+        default=0.0,
+        help='L2 regularization weight decay'
+    )
+
     args = parser.parse_args()
     return args

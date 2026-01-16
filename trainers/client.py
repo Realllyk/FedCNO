@@ -106,7 +106,8 @@ class Fed_Avg_client(object):
             lr = self.args.cbgru_local_lr
         elif self.args.model_type == "CGE":
             lr = self.args.cge_local_lr
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        # Add weight decay for regularization
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=self.args.weight_decay)
 
         self.result = dict()
         device = self.args.device
@@ -396,7 +397,8 @@ class Fed_Corr_client(Fed_Avg_client):
             lr = self.args.cbgru_local_lr
         elif self.args.model_type == "CGE":
             lr = self.args.cge_local_lr
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        # Add weight decay for regularization
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=self.args.weight_decay)
 
         self.result = dict()
         device = self.args.device
@@ -467,17 +469,18 @@ class Fed_LGV_client(object):
             import time
             run_timestamp = time.strftime("%Y%m%d_%H%M%S")
         
-        # New log path format: runs/lab_name/model_type/noise_type/noise_rate/timestamp/client_id
+        # New log path format: runs/lab_name/model_type/noise_type/noise_rate/vul/timestamp/client_id
         # args.model_type, args.noise_type, args.noise_rate should be available in args
         # Ensure compatibility if some args are missing
         model_type = getattr(self.args, 'model_type', 'unknown_model')
         noise_type = getattr(self.args, 'noise_type', 'unknown_noise')
         noise_rate = getattr(self.args, 'noise_rate', 0.0)
+        vul = getattr(self.args, 'vul', 'unknown_vul')
         
-        self.tb_writer = SummaryWriter(log_dir=f"./runs/{lab_name}/{model_type}/{noise_type}/{noise_rate}/{run_timestamp}/client_{self.client_id}")
+        self.tb_writer = SummaryWriter(log_dir=f"./runs/{lab_name}/{model_type}/{noise_type}/{noise_rate}/{vul}/{run_timestamp}/client_{self.client_id}")
         
         # Also create a text log file in the same directory
-        log_dir = f"./runs/{lab_name}/{model_type}/{noise_type}/{noise_rate}/{run_timestamp}/client_{self.client_id}"
+        log_dir = f"./runs/{lab_name}/{model_type}/{noise_type}/{noise_rate}/{vul}/{run_timestamp}/client_{self.client_id}"
         os.makedirs(log_dir, exist_ok=True)
         self.log_file_path = os.path.join(log_dir, "loss_log.txt")
         # Initialize log file with header
@@ -678,7 +681,8 @@ class Fed_LGV_client(object):
             lr = self.args.cbgru_local_lr
         elif self.args.model_type == "CGE":
             lr = self.args.cge_local_lr
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        # Add weight decay for regularization
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=self.args.weight_decay)
 
         self.result = dict()
         device = self.args.device
@@ -719,7 +723,8 @@ class Fed_LGV_client(object):
             lr = self.args.cbgru_local_lr
         elif self.args.model_type == "CGE":
             lr = self.args.cge_local_lr
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        # Add weight decay for regularization
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=self.args.weight_decay)
 
         self.result = dict()
         device = self.args.device
