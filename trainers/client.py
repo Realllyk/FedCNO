@@ -124,7 +124,11 @@ class Fed_Avg_client(object):
                 loss = self.criterion(outputs, y)
                 self.result['loss'] = self.result['loss'] + loss.item()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
+                # Gradient Clipping:
+                # - reentrancy: 使用默认或较宽松的裁剪 (10)
+                # - timestamp: 使用更严格的裁剪 (5) 以防止震荡
+                clip_value = 5 if getattr(self.args, 'vul', '') == 'timestamp' else 10
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_value)
                 optimizer.step()
 
                 del x1, x2, y, outputs, loss
@@ -700,7 +704,11 @@ class Fed_LGV_client(object):
                 # loss = loss.mean()
                 self.result['loss'] = self.result['loss'] + loss.item()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
+                # Gradient Clipping:
+                # - reentrancy: 使用默认或较宽松的裁剪 (10)
+                # - timestamp: 使用更严格的裁剪 (5) 以防止震荡
+                clip_value = 5 if getattr(self.args, 'vul', '') == 'timestamp' else 10
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_value)
                 optimizer.step()
 
                 del x1, x2, y, outputs, loss
@@ -754,7 +762,11 @@ class Fed_LGV_client(object):
 
                 self.result['loss'] = self.result['loss'] + loss.item()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
+                # Gradient Clipping:
+                # - reentrancy: 使用默认或较宽松的裁剪 (10)
+                # - timestamp: 使用更严格的裁剪 (5) 以防止震荡
+                clip_value = 5 if getattr(self.args, 'vul', '') == 'timestamp' else 10
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_value)
                 optimizer.step()
 
                 del x1, x2, y, outputs, loss

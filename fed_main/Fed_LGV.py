@@ -49,7 +49,7 @@ if __name__ == '__main__':
     if args.vul == 'reentrancy':
         class_weights = torch.tensor([1.0, 1.0]).to(args.device) # 重入漏洞暂时不加权，或者微调
     elif args.vul == 'timestamp':
-        class_weights = torch.tensor([1.0, 2.0]).to(args.device) # 时间戳漏洞严重漏报，加大Positive权重
+        class_weights = torch.tensor([1.2, 2.0]).to(args.device) # 稍微增加Negative权重以控制误报
     else:
         class_weights = torch.tensor([1.0, 1.0]).to(args.device) # 默认情况
 
