@@ -12,7 +12,7 @@ do
         do
             for frac in "${fracs[@]}"
             do
-                python Fed_PLE.py --vul $vul --noise_type non_noise --noise_rate $noise_rate  --device "$device" --batch 8 --epoch 50 --valid_frac $frac
+                python fed_main/Fed_PLE.py --vul $vul --noise_type non_noise --noise_rate $noise_rate  --device "$device" --batch 8 --epoch 50 --valid_frac $frac
             done
         done
     done

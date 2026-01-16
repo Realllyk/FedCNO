@@ -8,10 +8,9 @@ for vul in "${vuls[@]}"
 do
     for noise_rate in "${noise_rates[@]}"
     do
-    # 对每个噪声值运行五次
-    for i in {1..10}
+    # 对每个噪声值运行五�?    for i in {1..10}
     do
-        python Fed_LGV.py --vul $vul --noise_type fn_noise --noise_rate $noise_rate  --device cuda:6 --batch 8  --random_noise
+        python fed_main/Fed_LGV.py --vul $vul --noise_type fn_noise --noise_rate $noise_rate  --device cuda:6 --batch 8  --random_noise
     done
     done
 done

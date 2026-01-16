@@ -13,10 +13,9 @@ do
     do
         for noise_rate in "${noise_rates[@]}"
         do
-        # 对每个噪声值运行五次
-        for i in {1..3}
+        # 对每个噪声值运行五�?        for i in {1..3}
         do
-            python Fed_LGV.py --vul $vul --noise_type sys_noise --noise_rate $noise_rate --epoch 25  --warm_up_epoch 30 --device "$device"  --random_noise --global_weight "$gw"  --lab_name abl_no_local --model_type CBGRU  --consistency_score
+            python fed_main/Fed_LGV.py --vul $vul --noise_type sys_noise --noise_rate $noise_rate --epoch 25  --warm_up_epoch 30 --device "$device"  --random_noise --global_weight "$gw"  --lab_name abl_no_local --model_type CBGRU  --consistency_score
         done
         done
     done

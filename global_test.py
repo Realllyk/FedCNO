@@ -2,11 +2,12 @@ import torch
 import torch.nn as nn
 import json
 import os
+import time
 from pathlib import Path
 from sklearn.metrics import confusion_matrix
 
 
-def global_test(model, dataloader, criterion, args, method, reduction='mean'):
+def global_test(model, dataloader, criterion, args, method, reduction='mean', run_timestamp=None):
     all_predictions = []
     all_targets = []
     total_loss = 0
@@ -32,6 +33,14 @@ def global_test(model, dataloader, criterion, args, method, reduction='mean'):
     print(f"Averge Loss: {avg_loss}")
     tn, fp, fn, tp = confusion_matrix(all_targets, all_predictions).ravel()
     result_dict = dict()
+    
+    # Add timestamp to result_dict if provided
+    if run_timestamp:
+        result_dict['time'] = run_timestamp
+    else:
+        # Fallback to current time if not provided, though run_timestamp is preferred for consistency
+        result_dict['time'] = time.strftime("%Y%m%d_%H%M%S")
+        
     result_dict['Accuracy'] = (tp + tn) / (tp + tn + fp + fn)
     result_dict['False positive rate(FPR)'] = fp / (fp + tn)
     result_dict['False negative rate(FNR)'] = fn / (fn + tp)

@@ -1,3 +1,6 @@
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import copy 
 import gc
 import numpy as np
@@ -37,7 +40,8 @@ if __name__ == '__main__':
     # 服务器负责维护全局模型 (Global Model) 并协调各客户端的训练。
     # - model_type: 支持 'CBGRU' 或 'CGE' 等不同模型架构。
     # - global_weight: 控制 LGV 算法中全局视图概率的权重。
-    criterion = nn.CrossEntropyLoss()
+    class_weights = torch.tensor([2.0, 1.0]).to(args.device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     if args.model_type == "CBGRU":
         global_model = ClassiFilerNet(input_size, time_steps)
         reduction = 'none'
@@ -110,7 +114,7 @@ if __name__ == '__main__':
     for i in range(args.client_num):
         client = Fed_LGV_client(
             args,
-            nn.CrossEntropyLoss(reduction=reduction),
+            nn.CrossEntropyLoss(weight=class_weights, reduction=reduction),
             copy.deepcopy(server.global_model),
             train_ds[i],
             i,
@@ -179,6 +183,6 @@ if __name__ == '__main__':
         # if epoch % 5 == 0:
         #     server.autotune_gr(test_dl)
     
-    global_test(server.global_model, test_dl, criterion, args, f"{args.num_neigh}neigh_{args.global_weight}_{args.lab_name}")
+    global_test(server.global_model, test_dl, criterion, args, f"{args.num_neigh}neigh_{args.global_weight}_{args.lab_name}", run_timestamp=run_timestamp)
         
     

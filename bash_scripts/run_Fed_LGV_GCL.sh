@@ -5,7 +5,7 @@ noise_rates=(0.3)
 vuls=("reentrancy" "timestamp")
 # vuls=("reentrancy")
 # global_weights=(0.5 0.55 0.6 0.65 0.7 0.75)
-global_weights=(0.75)
+global_weights=(1.0)
 device="$1"
 
 for gw in ""${global_weights[@]}
@@ -14,11 +14,10 @@ do
     do
         for noise_rate in "${noise_rates[@]}"
         do
-        # 对每个噪声值运行五次
-        for i in {1..3}
-        do 
-            python Fed_LGV.py --vul $vul --noise_type sys_noise --noise_rate $noise_rate --epoch 25  --warm_up_epoch 30 --device "$device"  --random_noise --global_weight "$gw"  --lab_name abl_no_cons --model_type CBGRU 
-        done 
+        # 对每个噪声值运行五�?        for i in {1..20}
+        do
+            python fed_main/Fed_LGV.py --vul $vul --noise_type non_noise --noise_rate $noise_rate --epoch 30 --warm_up_epoch 25 --device "$device" --batch 8  --random_noise --global_weight 0.75 --lab_name Fed_LGV_GCL --model_type CBGRU --diff 
+        done
         done
     done
 done

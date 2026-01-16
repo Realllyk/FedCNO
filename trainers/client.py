@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import copy
 import time
+import os
 import sys
 import pandas as pd
 import torch.nn as nn
@@ -122,6 +123,7 @@ class Fed_Avg_client(object):
                 loss = self.criterion(outputs, y)
                 self.result['loss'] = self.result['loss'] + loss.item()
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
                 optimizer.step()
 
                 del x1, x2, y, outputs, loss
@@ -464,7 +466,24 @@ class Fed_LGV_client(object):
         if run_timestamp is None:
             import time
             run_timestamp = time.strftime("%Y%m%d_%H%M%S")
-        self.tb_writer = SummaryWriter(log_dir=f"./runs/{lab_name}/{run_timestamp}/client_{self.client_id}")
+        
+        # New log path format: runs/lab_name/model_type/noise_type/noise_rate/timestamp/client_id
+        # args.model_type, args.noise_type, args.noise_rate should be available in args
+        # Ensure compatibility if some args are missing
+        model_type = getattr(self.args, 'model_type', 'unknown_model')
+        noise_type = getattr(self.args, 'noise_type', 'unknown_noise')
+        noise_rate = getattr(self.args, 'noise_rate', 0.0)
+        
+        self.tb_writer = SummaryWriter(log_dir=f"./runs/{lab_name}/{model_type}/{noise_type}/{noise_rate}/{run_timestamp}/client_{self.client_id}")
+        
+        # Also create a text log file in the same directory
+        log_dir = f"./runs/{lab_name}/{model_type}/{noise_type}/{noise_rate}/{run_timestamp}/client_{self.client_id}"
+        os.makedirs(log_dir, exist_ok=True)
+        self.log_file_path = os.path.join(log_dir, "loss_log.txt")
+        # Initialize log file with header
+        with open(self.log_file_path, "w") as f:
+            f.write("Global_Step,Epoch,Batch_Loss\n")
+            
         self.tb_global_step = 0
 
 
@@ -677,6 +696,7 @@ class Fed_LGV_client(object):
                 # loss = loss.mean()
                 self.result['loss'] = self.result['loss'] + loss.item()
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
                 optimizer.step()
 
                 del x1, x2, y, outputs, loss
@@ -729,6 +749,7 @@ class Fed_LGV_client(object):
 
                 self.result['loss'] = self.result['loss'] + loss.item()
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
                 optimizer.step()
 
                 del x1, x2, y, outputs, loss
@@ -736,6 +757,11 @@ class Fed_LGV_client(object):
                 gc.collect()
 
             self.tb_writer.add_scalar("loss/train", self.result['loss'], self.tb_global_step)
+            
+            # Log loss to text file
+            with open(self.log_file_path, "a") as f:
+                f.write(f"{self.tb_global_step},{epoch},{self.result['loss']}\n")
+                
             self.tb_global_step += 1
     
     def get_parameters(self):

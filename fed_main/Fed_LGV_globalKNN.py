@@ -1,3 +1,6 @@
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import copy 
 import gc
 import numpy as np
@@ -110,6 +113,6 @@ if __name__ == '__main__':
         # if epoch % 5 == 0:
         #     server.autotune_gr(test_dl)
     
-    global_test(server.global_model, test_dl, criterion, args, 'Fed_LGV')
+    global_test(server.global_model, test_dl, criterion, args, 'Fed_LGV', run_timestamp=run_timestamp)
         
     
