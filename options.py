@@ -99,14 +99,15 @@ def parse_args():
 
     parser.add_argument(
         '--cbgru_local_epoch',
-        default=1,
+        default=8,
         type=int
     )
 
     parser.add_argument(
         '--cbgru_local_lr',
-        default=0.0001,
-        type=float
+        default=0.00008,
+        type=float,
+        help='Local learning rate for CBGRU. Recommended: 0.00005 for reentrancy, 0.0001 for others'
     )
 
     parser.add_argument(
@@ -316,7 +317,7 @@ def parse_args():
     parser.add_argument(
         '--weight_decay',
         type=float,
-        default=0.0,
+        default=1e-4,
         help='L2 regularization weight decay'
     )
 

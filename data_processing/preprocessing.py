@@ -6,6 +6,8 @@ import numpy as np
 import torch
 import pandas as pd
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 
 
 def vec2one(input):
@@ -51,7 +53,7 @@ def relabel_with_pretrained_knn(labels, features, num_classses, weights='uniform
 
     # Estimate label noise
     # est_noise_lvl = (predictions!=_labels).astype(np.int64).mean()
-    return predictions.astype(np.float32), probabilities, agreement_ratrios,
+    return predictions.astype(np.float32), probabilities, agreement_ratrios, indices
 
 
 def read_pretrain_feature(names, feature_dir):

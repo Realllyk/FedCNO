@@ -49,7 +49,7 @@ if __name__ == '__main__':
     if args.vul == 'reentrancy':
         class_weights = torch.tensor([1.0, 1.0]).to(args.device) # 重入漏洞暂时不加权，或者微调
     elif args.vul == 'timestamp':
-        class_weights = torch.tensor([1.2, 2.0]).to(args.device) # 稍微增加Negative权重以控制误报
+        class_weights = torch.tensor([1.2, 1.5]).to(args.device) # 稍微增加Negative权重以控制误报，降低Positive权重以减少FPR=1.0
     else:
         class_weights = torch.tensor([1.0, 1.0]).to(args.device) # 默认情况
 
@@ -172,8 +172,8 @@ if __name__ == '__main__':
             # 关键步骤：利用当前全局模型提取特征，动态更新 KNN 概率和一致性
             # client.get_global_knn_labels(args.vul, args.noise_type, args.noise_rate)
             # client.get_global_prob_labels(args.vul)
-            # client.get_global_feature_knn_labels()
-            client.get_global_feature_global_knn_labels()
+            client.get_global_feature_knn_labels()
+            # client.get_global_feature_global_knn_labels()
             
             # 3. 本地训练 (Local Training)
             # 融合标签 -> 生成伪标签 -> 加权训练

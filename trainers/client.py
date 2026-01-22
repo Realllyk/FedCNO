@@ -22,12 +22,39 @@ class Fed_Avg_client(object):
       criterion,
       model,
       dataset,
+      client_id=0,
+      run_timestamp=None
     ):
         self.args = args
         self.criterion = criterion
         self.model = model
         self.dataset = dataset
         self.device = args.device
+        self.client_id = client_id
+
+        # Initialize TensorBoard and log file
+        lab_name = getattr(self.args, 'lab_name', 'default')
+        if run_timestamp is None:
+            import time
+            run_timestamp = time.strftime("%Y%m%d_%H%M%S")
+        
+        model_type = getattr(self.args, 'model_type', 'unknown_model')
+        noise_type = getattr(self.args, 'noise_type', 'unknown_noise')
+        noise_rate = getattr(self.args, 'noise_rate', 0.0)
+        vul = getattr(self.args, 'vul', 'unknown_vul')
+        
+        # runs/lab_name/model_type/noise_type/noise_rate/vul/timestamp/client_id
+        log_dir = f"./runs/{lab_name}/{model_type}/{noise_type}/{noise_rate}/{vul}/{run_timestamp}/client_{self.client_id}"
+        self.tb_writer = SummaryWriter(log_dir=log_dir)
+        
+        os.makedirs(log_dir, exist_ok=True)
+        self.log_file_path = os.path.join(log_dir, "loss_log.txt")
+        # Check if file exists to append or write header
+        if not os.path.exists(self.log_file_path):
+            with open(self.log_file_path, "w") as f:
+                f.write("Global_Step,Epoch,Batch_Loss\n")
+            
+        self.tb_global_step = 0
 
     def get_parameters(self):
         return self.model.state_dict()
@@ -125,9 +152,9 @@ class Fed_Avg_client(object):
                 self.result['loss'] = self.result['loss'] + loss.item()
                 loss.backward()
                 # Gradient Clipping:
-                # - reentrancy: 使用默认或较宽松的裁剪 (10)
-                # - timestamp: 使用更严格的裁剪 (5) 以防止震荡
-                clip_value = 5 if getattr(self.args, 'vul', '') == 'timestamp' else 10
+                # - reentrancy: 使用极其严格的裁剪 (1.0) 以强力防止震荡和 NaN
+                # - timestamp: 使用极其严格的裁剪 (1.0) 以强力防止震荡
+                clip_value = 1.0 
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_value)
                 optimizer.step()
 
@@ -135,8 +162,13 @@ class Fed_Avg_client(object):
                 torch.cuda.empty_cache()
                 gc.collect()
             
-            # self.tb_writer.add_scalar("loss/train", self.result['loss'], self.tb_global_step)
-            # self.tb_global_step += 1
+            self.tb_writer.add_scalar("loss/train", self.result['loss'], self.tb_global_step)
+            
+            # Log loss to text file
+            with open(self.log_file_path, "a") as f:
+                f.write(f"{self.tb_global_step},{epoch},{self.result['loss']}\n")
+                
+            self.tb_global_step += 1
 
 
 class Fed_PLE_client(object):
@@ -466,6 +498,15 @@ class Fed_LGV_client(object):
         self.client_id = client_id
         self.device = args.device
         self.global_weight = global_weight
+        
+        # FedCNO: 初始化 fixed_global_model
+        # 注意：这里的 model 是客户端初始化时传入的初始模型
+        # 在 train() 开始前，我们应该手动更新它，以确保它始终是本轮最新的全局模型
+        self.fixed_global_model = copy.deepcopy(model)
+        self.fixed_global_model.eval() 
+        for param in self.fixed_global_model.parameters():
+            param.requires_grad = False
+             
         # Use a safe log_dir even if args lacks lab_name
         lab_name = getattr(self.args, 'lab_name', 'default')
         # Use formatted timestamp to separate runs while keeping history
@@ -503,7 +544,9 @@ class Fed_LGV_client(object):
         
         pre_feature_dir = f"./data/pretrain_feature/{vul}"
         # name_path = f"./data/client_split/{vul}/client_{self.client_id}/cbgru_contract_name_train.txt"
-        name_path = f"./data/4_client_split/{vul}/client_{self.client_id}/contract_name_train.txt"
+        # name_path = f"./data/4_client_split/{vul}/client_{self.client_id}/contract_name_train.txt"
+        # name_path = f"./data/graduate_client_split/{vul}/cbgru/client_{self.client_id}/contract_name_train.txt"
+        name_path = f"./data/graduate_client_split/{vul}/client_{self.client_id}/contract_name_train.txt"
         labels = self.dataset.labels
 
         # 读取数据和预训练特征
@@ -513,7 +556,10 @@ class Fed_LGV_client(object):
         # 运行 KNN 获取初始概率和一致性
         # - prob_relabels: 本地特征视角下的标签概率。
         # - agreement_ratios: 本地特征视角下的样本一致性。
-        relabels, prob_relabels, agreement_ratios = relabel_with_pretrained_knn(reduced_labels, pre_features, 2, 'uniform', self.args.num_neigh, 0.15)
+        relabels, prob_relabels, agreement_ratios, indices = relabel_with_pretrained_knn(reduced_labels, pre_features, 2, 'uniform', self.args.num_neigh, 0.15)
+        
+        # 保存静态特征 KNN 的邻居索引，供后续 Global View 构建使用
+        self.reduced_knn_indices = indices
         
         # Reduced probabilities, need to fullfill for the whole ds
         name_agr = dict()
@@ -557,7 +603,8 @@ class Fed_LGV_client(object):
     def get_global_knn_labels(self, vul, noise_type, noise_rate):
         pre_feature_dir = f"./data/pretrain_feature/{vul}"
         # name_path = f"./data/client_split/{vul}/client_{self.client_id}/cbgru_contract_name_train.txt"
-        name_path = f"./data/4_client_split/{vul}/client_{self.client_id}/contract_name_train.txt"
+        # name_path = f"./data/4_client_split/{vul}/client_{self.client_id}/contract_name_train.txt"
+        name_path = f"./data/graduate_client_split/{vul}/client_{self.client_id}/contract_name_train.txt"
 
         # Before local training, new local model is global model
         dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False)
@@ -574,7 +621,7 @@ class Fed_LGV_client(object):
         # print(len(gl_labels), gl_labels)
         reduced_names, reduced_labels = reduced_name_labels(name_path, gl_labels)
         pre_features = read_pretrain_feature(reduced_names, pre_feature_dir)
-        relabels, prob_relabels, _ = relabel_with_pretrained_knn(reduced_labels, pre_features, 2, 'uniform', self.args.num_neigh, 0.15)
+        relabels, prob_relabels, _, _ = relabel_with_pretrained_knn(reduced_labels, pre_features, 2, 'uniform', self.args.num_neigh, 0.15)
         # print(relabels)
 
         # Reduced probabilities, need to fullfill for the whole ds
@@ -625,7 +672,7 @@ class Fed_LGV_client(object):
                 
         conc_outputs = torch.cat(outputs_list, dim=0)
         conc_outputs = conc_outputs.cpu().numpy()
-        relabels, prob_relabels, _ = relabel_with_pretrained_knn(self.reduced_ds.labels, conc_outputs, 2, 'uniform', self.args.num_neigh, 0.15)
+        relabels, prob_relabels, _, _ = relabel_with_pretrained_knn(self.reduced_ds.labels, conc_outputs, 2, 'uniform', self.args.num_neigh, 0.15)
 
         name_prob = dict()
         for i, name in enumerate(self.reduced_ds.names):
@@ -643,41 +690,83 @@ class Fed_LGV_client(object):
         # Update reduced dataset with latest labels before KNN
         self.gen_reduced_ds()
         
+        # ---------------------------------------------------------------------
+        # 修改：Global View 构建逻辑更新
+        # 1. 邻居选择：复用 Local View 中的静态特征 KNN 邻居 (self.reduced_knn_indices)
+        # 2. 证据生成：使用当前全局模型对邻居样本输出的 Softmax 概率进行平均
+        # ---------------------------------------------------------------------
+
+        if not hasattr(self, 'reduced_knn_indices'):
+             # Fallback if not initialized (should not happen in correct flow)
+             print("Warning: reduced_knn_indices not found, falling back to dynamic KNN (which is not implemented in this experimental version)")
+             return 
+
+        # 1. 对 reduced_ds 进行全量推理，获取每个样本的当前模型预测概率
         dl = DataLoader(self.reduced_ds, batch_size=self.args.batch, shuffle=False)
-        outputs_list = []
+        all_probs_list = []
         
         with torch.no_grad():
             self.model.eval()
             for x1, x2, y, _ in dl:
-                x1, x2, y = x1.to(self.device), x2.to(self.device), y.to(self.device)
+                x1, x2 = x1.to(self.device), x2.to(self.device)
                 outputs = self.model(x1, x2)
-                outputs_list.append(self.model.inter_outputs)
+                probs = F.softmax(outputs, dim=1) # (B, C)
+                all_probs_list.append(probs)
         
-        conc_outputs = torch.cat(outputs_list, dim=0)
-        conc_outputs = conc_outputs.cpu().numpy()
+        # 拼接所有批次结果 -> (M, C)
+        all_probs = torch.cat(all_probs_list, dim=0)
         
-        # Use updated reduced_ds labels
-        relabels, prob_relabels, agreement_ratios = relabel_with_pretrained_knn(
-            self.reduced_ds.labels, conc_outputs, 2, 'uniform', self.args.num_neigh, 0.15
-        )
+        # 2. 获取静态邻居索引
+        # self.reduced_knn_indices 是一个 list of lists 或者 numpy array (M, K)
+        # 确保它是 tensor 以便索引
+        knn_indices = torch.tensor(self.reduced_knn_indices, dtype=torch.long, device=self.device)
+        
+        # 3. 查表获取邻居概率
+        # neighbor_probs: (M, K, C)
+        neighbor_probs = all_probs[knn_indices]
+        
+        # ---------------------------------------------------------------------
+        # 修改：引入基于熵的动态加权 (Entropy-based Dynamic Weighting)
+        # ---------------------------------------------------------------------
+        
+        # 计算每个邻居的熵 (Entropy): H(p) = -sum(p * log(p))
+        # (M, K)
+        neighbor_entropy = -torch.sum(neighbor_probs * torch.log(neighbor_probs + 1e-8), dim=2)
+        
+        # 计算权重：熵越小 (越确信)，权重越大
+        # 使用 Softmax(-Entropy) 是一种平滑且鲁棒的加权方式 (相当于 Temperature=1.0)
+        # (M, K)
+        neighbor_weights = F.softmax(-neighbor_entropy, dim=1)
+        
+        # 扩展权重维度以匹配概率矩阵: (M, K, 1)
+        neighbor_weights = neighbor_weights.unsqueeze(2)
+        
+        # 加权平均得到 Global View
+        # (M, C)
+        global_view_probs = torch.sum(neighbor_probs * neighbor_weights, dim=1)
+        
+        # ---------------------------------------------------------------------
+        
+        # 转为 numpy 以便后续映射
+        prob_relabels = global_view_probs.cpu().numpy()
 
         name_prob = dict()
-        name_agr = dict()
+        # name_agr = dict()
         for i, name in enumerate(self.reduced_ds.names):
             name_prob[name] = prob_relabels[i]
-            name_agr[name] = agreement_ratios[i]
+            # name_agr[name] = agreement_ratios[i]
 
         full_prob = list()
-        full_agr = list()
+        # full_agr = list()
         for name in self.dataset.names:
             full_prob.append(name_prob[name])
-            full_agr.append(name_agr[name])
+            # full_agr.append(name_agr[name])
 
         full_prob = np.array(full_prob, dtype=np.float32)
         self.global_prob_labels = torch.tensor(full_prob, dtype=torch.float32).to(self.args.device)
         
         # Update agreement ratio for the dataset
-        self.dataset.set_ag_rt(full_agr)
+        # self.dataset.set_ag_rt(full_agr)
 
     def warmup_train(self):
         dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True)
@@ -705,9 +794,9 @@ class Fed_LGV_client(object):
                 self.result['loss'] = self.result['loss'] + loss.item()
                 loss.backward()
                 # Gradient Clipping:
-                # - reentrancy: 使用默认或较宽松的裁剪 (10)
-                # - timestamp: 使用更严格的裁剪 (5) 以防止震荡
-                clip_value = 5 if getattr(self.args, 'vul', '') == 'timestamp' else 10
+                # - reentrancy: 使用极其严格的裁剪 (1.0) 以强力防止震荡和 NaN
+                # - timestamp: 使用极其严格的裁剪 (1.0) 以强力防止震荡
+                clip_value = 1.0 
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_value)
                 optimizer.step()
 
@@ -715,16 +804,75 @@ class Fed_LGV_client(object):
                 torch.cuda.empty_cache()
                 gc.collect()
                 
-
     def train(self):
-        # generate probability labels
+        # ---------------- FedCNO: 动态 alpha 计算与数据集标签更新 ----------------
+        
+        # 关键修正：在每轮本地训练开始前，必须更新 fixed_global_model 为当前最新的本地模型
+        # (因为在 Fed_LGV.py 中，client.model 已经在每轮开始时被重置为 server.global_model)
+        # 这样 fixed_global_model 才能代表本轮的"全局视图"
+        self.fixed_global_model.load_state_dict(self.model.state_dict())
+        self.fixed_global_model.eval()
+        
+        # 在每轮训练开始前，遍历整个数据集，计算每个样本的不确定性和动态融合权重 alpha
+        # 并据此更新 dataset.labels (伪标签)
+        
+        # 1. 计算全局不确定性与动态 alpha
+        # 为了计算整个数据集的不确定性，我们需要遍历一遍数据
+        # 使用 self.fixed_global_model (本轮固定的全局视图)
+        
+        # 创建一个不打乱的 DataLoader 以便按顺序获取不确定性
+        eval_dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False)
+        all_uncertainties = []
+        
         with torch.no_grad():
-            # print(self.global_prob_labels.shape, self.local_prob_labels.shape)
-            prob_labels = self.global_weight*self.global_prob_labels + (1-self.global_weight)*self.local_prob_labels
+            self.fixed_global_model.eval()
+            for x1, x2, _, _ in eval_dl:
+                x1, x2 = x1.to(self.device), x2.to(self.device)
+                global_logits = self.fixed_global_model(x1, x2)
+                global_probs = F.softmax(global_logits, dim=1) # (B, C)
+                
+                # 计算 Entropy: u = - sum(p * log(p)) / log(C)
+                num_classes = global_probs.shape[1]
+                entropy = -torch.sum(global_probs * torch.log(global_probs + 1e-8), dim=1)
+                max_entropy = np.log(num_classes)
+                uncertainty = entropy / max_entropy # (B,)
+                all_uncertainties.append(uncertainty.cpu())
+                
+        # 拼接所有不确定性分数
+        all_uncertainties = torch.cat(all_uncertainties, dim=0) # (N,)
+        
+        # 2. 计算动态权重 alpha (公式 3 & 5)
+        # alpha_raw = 1 - u
+        alpha_raw = 1.0 - all_uncertainties
+        
+        # 截断约束 alpha \in [0.1, 0.9]
+        alpha_min, alpha_max = 0.1, 0.9
+        alpha = torch.clamp(alpha_raw, alpha_min, alpha_max)
+        
+        # 将 alpha 扩展维度以匹配 prob_labels: (N, 1)
+        alpha = alpha.unsqueeze(1).to(self.device)
+        
+        # 3. 融合生成伪标签 (公式 6)
+        # p_tilde = alpha * p_global + (1-alpha) * p_local
+        # 注意：这里的 p_global 和 p_local 分别是 self.global_prob_labels 和 self.local_prob_labels
+        # 它们已经在之前通过 get_global/local_knn_labels 计算并存储好了
+        
+        # 确保 global/local_prob_labels 在设备上
+        if self.global_prob_labels.device != self.device:
+            self.global_prob_labels = self.global_prob_labels.to(self.device)
+        if self.local_prob_labels.device != self.device:
+            self.local_prob_labels = self.local_prob_labels.to(self.device)
+            
+        with torch.no_grad():
+            # 使用动态 alpha 进行融合
+            prob_labels = alpha * self.global_prob_labels + (1 - alpha) * self.local_prob_labels
             prob_labels = F.softmax(prob_labels, dim=1)
-            labels = torch.argmax(prob_labels, dim=-1)
-        # print(len(labels))
+            labels = torch.argmax(prob_labels, dim=-1) # (N,)
+            
+        # 4. 更新数据集标签
         self.dataset.labels = labels.detach().cpu().numpy()
+        
+        # ---------------------------------------------------------------------
 
         dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True)
         if self.args.model_type == "CBGRU":
@@ -764,8 +912,8 @@ class Fed_LGV_client(object):
                 loss.backward()
                 # Gradient Clipping:
                 # - reentrancy: 使用默认或较宽松的裁剪 (10)
-                # - timestamp: 使用更严格的裁剪 (5) 以防止震荡
-                clip_value = 5 if getattr(self.args, 'vul', '') == 'timestamp' else 10
+                # - timestamp: 使用极其严格的裁剪 (1.0) 以强力防止震荡
+                clip_value = 1.0 if getattr(self.args, 'vul', '') == 'timestamp' else 10
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_value)
                 optimizer.step()
 

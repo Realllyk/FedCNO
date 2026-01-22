@@ -14,6 +14,8 @@ from trainers.server import Server
 from trainers.client import Fed_Avg_client
 from global_test import global_test
 import random
+import time
+import numpy as np
 
 
 if __name__ == '__main__':
@@ -26,6 +28,14 @@ if __name__ == '__main__':
         noise_rates = random.sample([0.2, 0.2, 0.3, 0.3], 4)
     else:
         noise_rates = [args.noise_rate] * 4
+
+    # Set random seed
+    if args.seed is not None:
+        random.seed(args.seed)
+        np.random.seed(int(args.seed))
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
 
 
     train_ds = list()
@@ -58,6 +68,9 @@ if __name__ == '__main__':
 
     # test_dl = gen_cbgru_valid_dl(args.vul)
     test_dl = gen_valid_dl(args.model_type, args.vul)
+    
+    run_timestamp = time.strftime("%Y%m%d_%H%M%S")
+    
     for epoch in range(args.epoch):
         server.initialize_epoch_updates(epoch)
 
@@ -65,7 +78,9 @@ if __name__ == '__main__':
             client = Fed_Avg_client(args,
                                 criterion,
                                 None,
-                                train_ds[i])
+                                train_ds[client_id],
+                                client_id=client_id,
+                                run_timestamp=run_timestamp)
             # print(f"Create Client {client_id}!")
             client.model = copy.deepcopy(server.global_model)
             client.train()
@@ -85,6 +100,6 @@ if __name__ == '__main__':
         print(epoch)
     
     
-    global_test(server.global_model, test_dl, criterion, args, args.lab_name)
+    global_test(server.global_model, test_dl, criterion, args, args.lab_name, run_timestamp=run_timestamp)
         
     

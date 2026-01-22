@@ -1,3 +1,4 @@
+import numpy as np
 import os
 import pandas as pd
 import pickle
@@ -33,13 +34,29 @@ class CbgruDataset(Dataset):
     def __getitem__(self, idx):
         word2vec_path = os.path.join(self.word2vec_dir, f"{self.names[idx]}.pkl")
         fastText_path = os.path.join(self.fastText_dir, f"{self.names[idx]}.pkl")
-        with open(word2vec_path, 'rb') as f:
-            word2vec = pickle.load(f)
-            word2vec = torch.tensor(word2vec.reshape(1, 100, 300), dtype=torch.float32)
-        with open(fastText_path, 'rb') as f:
-            fastText = pickle.load(f)
-            fastText = torch.tensor(fastText, dtype=torch.float32)
-        label = torch.tensor(self.labels[idx], dtype=torch.long)
+        try:
+            with open(word2vec_path, 'rb') as f:
+                word2vec = pickle.load(f)
+                if isinstance(word2vec, list):
+                    print(f"[DEBUG] Found list type in word2vec file: {word2vec_path}")
+                # if isinstance(word2vec, list):
+                #     # print(f"DEBUG: Data at {word2vec_path} is a LIST, not numpy array.")
+                #     word2vec = np.array(word2vec)
+                word2vec = torch.tensor(word2vec.reshape(1, 100, 300), dtype=torch.float32)
+            with open(fastText_path, 'rb') as f:
+                fastText = pickle.load(f)
+                if isinstance(fastText, list):
+                     print(f"[DEBUG] Found list type in fastText file: {fastText_path}")
+                # if isinstance(fastText, list):
+                #     fastText = np.array(fastText)
+                fastText = torch.tensor(fastText, dtype=torch.float32)
+            label = torch.tensor(self.labels[idx], dtype=torch.long)
+        except Exception as e:
+            print(f"Error loading data for index {idx}, name: {self.names[idx]}")
+            print(f"Word2Vec Path: {word2vec_path}")
+            print(f"FastText Path: {fastText_path}")
+            print(f"Error details: {e}")
+            raise e
 
         return word2vec, fastText, label
 
