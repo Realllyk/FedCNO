@@ -1,7 +1,5 @@
 4_client_result
 data
-!data/cge_data
-!data/graduate_client_split
 merge_result
 __pycache__
 runs/
