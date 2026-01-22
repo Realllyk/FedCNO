@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from options import parse_args
 from data_processing.dataloader_manager import gen_cbgru_dl, gen_cbgru_valid_dl, gen_client_ds, gen_valid_dl
+from data_processing.preprocessing import coordinate_sys_noise_clusters
 from models.ClassiFilerNet import ClassiFilerNet
 from models.CGE_Variants import CGEVariant
 from trainers.server import Server
@@ -37,13 +38,35 @@ if __name__ == '__main__':
         torch.cuda.manual_seed(args.seed)
         torch.cuda.manual_seed_all(args.seed)
 
+    # -------------------------------------------------------------------------
+    # 系统性噪声协调 (Systemic Noise Coordination)
+    # -------------------------------------------------------------------------
+    assigned_clusters_dict, global_cluster_map = coordinate_sys_noise_clusters(
+        args.client_num, 
+        args.vul, 
+        args.noise_type, 
+        n_clusters=args.n_clusters, 
+        seed=int(args.seed)
+    )
 
     train_ds = list()
     for i in range(args.client_num):
         # train_dl, INPUT_SIZE, TIME_STAMP = gen_cbgru_dl(i, args.vul, args.noise_type, args.noise_rate, args.batch)
         # dataloader_dict['train'].append(train_dl)
         # ds = gen_cbgru_ds(i, args.vul, args.noise_type, args.noise_rate, args.random_noise, args.num_neigh)
-        ds = gen_client_ds(args.model_type, i, args.vul, args.noise_type, noise_rates[i], args.random_noise, args.num_neigh)
+        ds = gen_client_ds(
+            args.model_type, 
+            i, 
+            args.vul, 
+            args.noise_type, 
+            noise_rates[i], 
+            args.random_noise, 
+            args.num_neigh,
+            assigned_clusters=assigned_clusters_dict,
+            global_cluster_map=global_cluster_map,
+            n_clusters=args.n_clusters,
+            seed=int(args.seed)
+        )
         train_ds.append(ds)
 
     criterion = nn.CrossEntropyLoss()
@@ -70,19 +93,26 @@ if __name__ == '__main__':
     test_dl = gen_valid_dl(args.model_type, args.vul)
     
     run_timestamp = time.strftime("%Y%m%d_%H%M%S")
+
+    # Initialize clients list
+    clients = []
+    for client_id in range(args.client_num):
+        client = Fed_Avg_client(args,
+                            criterion,
+                            copy.deepcopy(server.global_model),
+                            train_ds[client_id],
+                            client_id=client_id,
+                            run_timestamp=run_timestamp)
+        clients.append(client)
     
     for epoch in range(args.epoch):
         server.initialize_epoch_updates(epoch)
 
         for client_id in range(args.client_num):
-            client = Fed_Avg_client(args,
-                                criterion,
-                                None,
-                                train_ds[client_id],
-                                client_id=client_id,
-                                run_timestamp=run_timestamp)
-            # print(f"Create Client {client_id}!")
+            client = clients[client_id]
+            # Update local model with latest global model
             client.model = copy.deepcopy(server.global_model)
+            
             client.train()
             server.save_train_updates(
                     copy.deepcopy(client.get_parameters()),
@@ -91,7 +121,7 @@ if __name__ == '__main__':
             )
             print(f"client:{client_id}")
             client.print_loss()
-            del client
+            # del client
             torch.cuda.empty_cache()
             gc.collect()
 

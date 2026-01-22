@@ -6,6 +6,8 @@ import torch.nn as nn
 import torch.functional as F
 from trainers.evaluation import Evaluation
 from sklearn.metrics import f1_score
+import os
+import time
 
 
 class Server(object):
@@ -164,19 +166,52 @@ class LGV_server(Server):
         model,
         device,
         criterion,
-        global_weight
+        global_weight,
+        run_timestamp=None
     ):
         super().__init__(args, model, device, criterion)
         self.global_weight = global_weight
         self.previous_f1 = None
+        self.run_timestamp = run_timestamp if run_timestamp else time.strftime("%Y%m%d_%H%M%S")
     
-    def autotune_gr(self, test_dl):
+    def autotune_gr(self, valid_dl):
         all_predictions = []
         all_targets = []
         total_loss = 0
         self.global_model.eval()
+        
+        # 构建与 Client 一致的日志路径: runs/{lab_name}/{noise_type}/{noise_rate}/{vul}/{timestamp}/valid
+        # 注意：Client 是在 runs/.../{timestamp}/client_{id}
+        # Server 验证集日志放在 runs/.../{timestamp}/valid
+        
+        # 1. 构建基础路径
+        # 假设 lab_name, noise_type 等都在 args 中
+        # 路径结构: runs/Fed_LGV/CBGRU/sys_noise/0.3/reentrancy/20260122_164552/valid
+        
+        base_dir = os.path.join(
+            "runs",
+            self.args.lab_name,
+            self.args.model_type,
+            self.args.noise_type,
+            str(self.args.noise_rate),
+            self.args.vul,
+            self.run_timestamp
+        )
+        
+        valid_log_dir = os.path.join(base_dir, "valid")
+        
+        if not os.path.exists(valid_log_dir):
+            os.makedirs(valid_log_dir)
+        
+        log_file_path = os.path.join(valid_log_dir, "loss_log.txt")
+        
+        # 如果文件不存在，写入表头
+        if not os.path.exists(log_file_path):
+            with open(log_file_path, "w") as f:
+                f.write("Timestamp,Validation_Loss,Macro_F1\n")
+        
         with torch.no_grad():
-            for x1, x2, y in test_dl:
+            for x1, x2, y in valid_dl:
                 x1, x2, y = x1.to(self.args.device), x2.to(self.args.device), y.to(self.args.device)
                 y = y.flatten().long()
                 outputs = self.global_model(x1, x2)
@@ -189,8 +224,20 @@ class LGV_server(Server):
                 all_targets.extend(y.flatten().tolist())
             
             torch.cuda.empty_cache()
+            
+        # 计算平均 loss
+        avg_loss = total_loss / len(valid_dl)
+        print(f"Validation Loss: {avg_loss}")
         
-        current_f1 = (all_targets, all_predictions)
+        # 记录 loss 到文件
+        current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+        
+        from sklearn.metrics import f1_score
+        current_f1 = f1_score(all_targets, all_predictions, average='macro')
+        
+        with open(log_file_path, "a") as f:
+            f.write(f"{current_time},{avg_loss},{current_f1}\n")
+        
         if self.previous_f1 != None:
             if current_f1 > self.previous_f1:
                 self.global_weight -= self.args.adjustment_factor

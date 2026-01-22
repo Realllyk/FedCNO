@@ -845,8 +845,8 @@ class Fed_LGV_client(object):
         # alpha_raw = 1 - u
         alpha_raw = 1.0 - all_uncertainties
         
-        # 截断约束 alpha \in [0.1, 0.9]
-        alpha_min, alpha_max = 0.1, 0.9
+        # 截断约束 alpha \in [0.1, 0.7]
+        alpha_min, alpha_max = 0.1, 0.7
         alpha = torch.clamp(alpha_raw, alpha_min, alpha_max)
         
         # 将 alpha 扩展维度以匹配 prob_labels: (N, 1)

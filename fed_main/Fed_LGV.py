@@ -8,7 +8,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from options import parse_args
-from data_processing.dataloader_manager import gen_lgv_ds, gen_valid_dl, gen_cbgru_dl, gen_client_ds
+from data_processing.dataloader_manager import gen_lgv_ds, gen_test_dl, gen_cbgru_dl, gen_client_ds, gen_valid_dl
+from data_processing.preprocessing import compute_global_clusters, coordinate_sys_noise_clusters
 from models.ClassiFilerNet import ClassiFilerNet
 from models.CGE_Variants import CGEVariant
 from trainers.server import LGV_server
@@ -27,11 +28,40 @@ if __name__ == '__main__':
     else:
         noise_rates = [args.noise_rate] * 4
 
+    # -------------------------------------------------------------------------
+    # 系统性噪声协调 (Systemic Noise Coordination)
+    # -------------------------------------------------------------------------
+    # 如果启用了系统性噪声 (sys_noise)，我们希望不同客户端的噪声模式是“错开”的。
+    # 方案：预先分配簇 ID 给每个客户端。
+    # 逻辑已封装在 coordinate_sys_noise_clusters 中，包含基于分布的优化分配。
+    
+    assigned_clusters_dict, global_cluster_map = coordinate_sys_noise_clusters(
+        args.client_num, 
+        args.vul, 
+        args.noise_type, 
+        n_clusters=args.n_clusters, 
+        seed=int(args.seed)
+    )
+
     train_ds = list()
     for i in range(args.client_num):
-        ds = gen_client_ds(args.model_type, i, args.vul, args.noise_type, noise_rates[i], args.random_noise, args.num_neigh)
+        ds = gen_client_ds(
+            args.model_type, 
+            i, 
+            args.vul, 
+            args.noise_type, 
+            noise_rates[i], 
+            args.random_noise, 
+            args.num_neigh,
+            assigned_clusters=assigned_clusters_dict, 
+            global_cluster_map=global_cluster_map,
+            n_clusters=args.n_clusters,
+            seed=int(args.seed)
+        )
         train_ds.append(ds)
-
+    
+    # Collect noise labels from warm-up datasets to reuse in LGV datasets
+    generated_noise_labels = [ds.labels for ds in train_ds]
     
     # initialize Server
     # -------------------------------------------------------------------------
@@ -66,7 +96,8 @@ if __name__ == '__main__':
         global_model,
         args.device,
         criterion,
-        args.global_weight
+        args.global_weight,
+        run_timestamp=time.strftime("%Y%m%d_%H%M%S")
     )
 
     #  Warm up
@@ -108,12 +139,44 @@ if __name__ == '__main__':
     # initialize dataset
     # 重新初始化数据集，为正式的 Fed_LGV 训练做准备
     # gen_lgv_ds 会生成支持图特征/模式特征读取的专用数据集
+    
+    # -------------------------------------------------------------------------
+    # 系统性噪声协调 (Systemic Noise Coordination)
+    # -------------------------------------------------------------------------
+    # 如果启用了系统性噪声 (sys_noise)，我们希望不同客户端的噪声模式是“错开”的。
+    # 方案：预先分配簇 ID 给每个客户端。
+    # 逻辑已封装在 coordinate_sys_noise_clusters 中，包含基于分布的优化分配。
+    
+    # assigned_clusters_dict, global_cluster_map = coordinate_sys_noise_clusters(
+    #     args.client_num, 
+    #     args.vul, 
+    #     args.noise_type, 
+    #     n_clusters=args.n_clusters, 
+    #     seed=int(args.seed)
+    # )
+
     train_ds = list()
     for i in range(args.client_num):
-        ds = gen_lgv_ds(i, args.vul, args.noise_type, args.noise_rate, args.random_noise, args.num_neigh, args.model_type)
+        ds = gen_lgv_ds(
+            i, 
+            args.vul, 
+            args.noise_type, 
+            args.noise_rate, 
+            args.random_noise, 
+            args.num_neigh, 
+            args.model_type, 
+            assigned_clusters=assigned_clusters_dict, 
+            global_cluster_map=global_cluster_map,
+            n_clusters=args.n_clusters,
+            seed=int(args.seed),
+            predefined_labels=generated_noise_labels[i]
+        )
         train_ds.append(ds)
     print(args.random_noise)
-    test_dl = gen_valid_dl(args.model_type, args.vul)
+    # test_dl 是真正的测试集 (Test Set)
+    test_dl = gen_test_dl(args.model_type, args.vul)
+    # valid_dl 是验证集 (Validation Set)，用于辅助调参或早停（目前代码中未使用，预留）
+    valid_dl = gen_valid_dl(args.model_type, args.vul)
 
     # initialize Client
     # -------------------------------------------------------------------------
@@ -192,8 +255,9 @@ if __name__ == '__main__':
         
         # 5. 服务器聚合 (Aggregation)
         server.average_weights()
-        # if epoch % 5 == 0:
-        #     server.autotune_gr(test_dl)
+        if epoch % 5 == 0:
+            # 使用验证集 (valid_dl) 而不是测试集来调整全局权重
+            server.autotune_gr(valid_dl)
     
     global_test(server.global_model, test_dl, criterion, args, f"{args.num_neigh}neigh_{args.global_weight}_{args.lab_name}", run_timestamp=run_timestamp)
         

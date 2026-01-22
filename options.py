@@ -321,5 +321,12 @@ def parse_args():
         help='L2 regularization weight decay'
     )
 
+    parser.add_argument(
+        '--n_clusters',
+        type=int,
+        default=20,
+        help='Number of clusters for systemic noise generation'
+    )
+
     args = parser.parse_args()
     return args
