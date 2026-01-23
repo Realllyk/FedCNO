@@ -40,9 +40,13 @@ def train_one_client_clc(client_id, args, global_model, dataset, tao, conf_score
     
     if stage == 'holdout':
         if conf_score is not None:
+            # We must compute confidence first to generate sfm_Mat
+            client.confidence()
             client.data_holdout(conf_score)
     elif stage == 'correct':
         if conf_score is not None:
+            # We must compute confidence first to generate sfm_Mat
+            client.confidence()
             client.data_holdout(conf_score)
             client.data_correct()
 

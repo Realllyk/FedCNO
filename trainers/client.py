@@ -585,7 +585,7 @@ class Fed_LGV_client(object):
         
         pre_feature_dir = os.path.join(self.args.data_dir, f"pretrain_feature/{vul}")
         # name_path = os.path.join(self.args.data_dir, f"client_split/{vul}/client_{self.client_id}/cbgru_contract_name_train.txt")
-        name_path = os.path.join(self.args.data_dir, f"4_client_split/{vul}/client_{self.client_id}/contract_name_train.txt")
+        name_path = os.path.join(self.args.data_dir, f"graduate_client_split/{vul}/client_{self.client_id}/contract_name_train.txt")
         labels = self.dataset.labels
 
         # 读取数据和预训练特征
@@ -1107,6 +1107,7 @@ class Fed_CLC_client(object):
 
     def confidence(self):
         outputSofma = self.outputSof()
+        self.sfm_Mat = outputSofma  # Store it here
         r = outputSofma.shape[0]
         c = outputSofma.shape[1]
         prob_everyclass = [[] for i in range(c - 1)]
