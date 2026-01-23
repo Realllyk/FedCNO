@@ -162,7 +162,15 @@ if __name__ == "__main__":
     else:
         noise_rates = [args.noise_rate] * 4
 
-    whole_ds,  data_indices = gen_whole_dataset(args.model_type, args.client_num, args.vul, args.noise_type, noise_rates, args.num_neigh)
+    whole_ds,  data_indices = gen_whole_dataset(
+        args.model_type, 
+        args.client_num, 
+        args.vul, 
+        args.noise_type, 
+        noise_rates, 
+        args.num_neigh, 
+        data_dir=args.data_dir
+    )
     criterion = nn.CrossEntropyLoss(reduction='none')
     LID_accumulative_client = np.zeros(args.client_num)
 
@@ -350,7 +358,7 @@ if __name__ == "__main__":
     prob = [1/args.client_num for i in range(args.client_num)]
     print("----------------------STAGE 3--------------------------------")
     # test_dl = gen_cbgru_valid_dl(args.vul, 0, args.batch)
-    test_dl = gen_valid_dl(args.model_type, args.vul)
+    test_dl = gen_valid_dl(args.model_type, args.vul, data_dir=args.data_dir)
 
     for rnd in range(args.rounds2):
         idxs_users = np.random.choice(range(args.client_num), m, replace=False, p = prob)

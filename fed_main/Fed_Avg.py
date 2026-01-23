@@ -4,6 +4,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import copy
 import gc
 import torch
+import numpy as np
+import time
 import torch.nn as nn
 import torch.nn.functional as F
 from options import parse_args
@@ -91,7 +93,8 @@ if __name__ == '__main__':
             assigned_clusters=assigned_clusters_dict,
             global_cluster_map=global_cluster_map,
             n_clusters=args.n_clusters,
-            seed=int(args.seed)
+            seed=int(args.seed),
+            data_dir=args.data_dir
         )
         train_ds.append(ds)
 
@@ -116,7 +119,7 @@ if __name__ == '__main__':
     #     model = model.to(args.device)
 
     # test_dl = gen_cbgru_valid_dl(args.vul)
-    test_dl = gen_valid_dl(args.model_type, args.vul)
+    test_dl = gen_valid_dl(args.model_type, args.vul, data_dir=args.data_dir)
     
     run_timestamp = time.strftime("%Y%m%d_%H%M%S")
 

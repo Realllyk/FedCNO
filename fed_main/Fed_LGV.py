@@ -109,7 +109,8 @@ if __name__ == '__main__':
             assigned_clusters=assigned_clusters_dict, 
             global_cluster_map=global_cluster_map,
             n_clusters=args.n_clusters,
-            seed=int(args.seed)
+            seed=int(args.seed),
+            data_dir=args.data_dir
         )
         train_ds.append(ds)
     
@@ -218,14 +219,15 @@ if __name__ == '__main__':
             global_cluster_map=global_cluster_map,
             n_clusters=args.n_clusters,
             seed=int(args.seed),
-            predefined_labels=generated_noise_labels[i]
+            predefined_labels=generated_noise_labels[i],
+            data_dir=args.data_dir
         )
         train_ds.append(ds)
     print(args.random_noise)
     # test_dl 是真正的测试集 (Test Set)
-    test_dl = gen_test_dl(args.model_type, args.vul)
+    test_dl = gen_test_dl(args.model_type, args.vul, data_dir=args.data_dir)
     # valid_dl 是验证集 (Validation Set)，用于辅助调参或早停（目前代码中未使用，预留）
-    valid_dl = gen_valid_dl(args.model_type, args.vul)
+    valid_dl = gen_valid_dl(args.model_type, args.vul, data_dir=args.data_dir)
 
     # initialize Client
     # -------------------------------------------------------------------------

@@ -77,9 +77,9 @@ if __name__ == "__main__":
 
         word2vec_dir = os.path.join(args.data_dir, f"cbgru_data/{args.vul}/word2vec")
         fastText_dir = os.path.join(args.data_dir, f"cbgru_data/{args.vul}/FastText")
-        client_dir = os.path.join(args.data_dir, f"client_split/{args.vul}/client_{i}")
-        names_path = os.path.join(client_dir, "cbgru_contract_name_train.txt")
-        labels_path = os.path.join(client_dir, f"{args.noise_type}_label_train_000.csv")
+        client_dir = os.path.join(args.data_dir, f"graduate_client_split/{args.vul}/client_{i}")
+        names_path = os.path.join(client_dir, "contract_name_train.txt")
+        labels_path = os.path.join(client_dir, "label_train.csv")
         noise_labels.append(flip_values(names_path, labels_path, args.noise_rate))
         
     

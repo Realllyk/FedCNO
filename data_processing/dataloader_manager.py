@@ -14,7 +14,9 @@ from data_processing.preprocessing import get_cbgru_feature, relabel_with_pretra
 
 
 # 生成cbgru使用的dataloader
-def gen_cbgru_dl(client_id, vul, noise_type, noise_rate, batch = 16, shuffle=True, random_noise = False, data_dir="./"):
+def gen_cbgru_dl(client_id, vul, noise_type, noise_rate, batch = 16, shuffle=True, random_noise = False, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
     # word2vec_dir = f"/root/autodl-tmp/data/cbgru_data/{vul}/word2vec"
     # fastText_dir = f"/root/autodl-tmp/data/cbgru_data/{vul}/FastText"
     # client_dir = f"/root/autodl-tmp/data/client_split/{vul}/client_{client_id}/"
@@ -43,7 +45,9 @@ def gen_cbgru_dl(client_id, vul, noise_type, noise_rate, batch = 16, shuffle=Tru
     return dl, 100, 300
 
 
-def gen_cbgru_client_valid_dl(client_id, vul, batch, noise_labels, frac, data_dir="./"):
+def gen_cbgru_client_valid_dl(client_id, vul, batch, noise_labels, frac, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
     word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
     fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
     client_dir = os.path.join(data_dir, f"client_split/{vul}/client_{client_id}")
@@ -64,7 +68,9 @@ def gen_cbgru_client_valid_dl(client_id, vul, batch, noise_labels, frac, data_di
     return dl
 
 
-def gen_cbgru_valid_dl(vul, id=0, batch=16, data_dir="./"):
+def gen_cbgru_valid_dl(vul, id=0, batch=16, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
     embeddings = ['word2vec', 'FastText']
     file_paths = []
     for emb in embeddings:
@@ -85,14 +91,18 @@ def gen_cbgru_valid_dl(vul, id=0, batch=16, data_dir="./"):
     return dl
 
     
-def gen_whole_dataset(model_type, client_num, vul, noise_type, noise_rates, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir="./"):
+def gen_whole_dataset(model_type, client_num, vul, noise_type, noise_rates, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
     if(model_type == "CBGRU"):
         return gen_cbgru_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, data_dir)
     else:
         return gen_cge_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, data_dir)
 
 
-def gen_cbgru_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir="./"):
+def gen_cbgru_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
     word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
     fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
     all_names = []
@@ -139,7 +149,9 @@ def gen_cbgru_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh=
     return ds, data_indices
 
 
-def gen_cge_whole_dataset(client_num, vul, noise_type, noise_rate, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir="./"):
+def gen_cge_whole_dataset(client_num, vul, noise_type, noise_rate, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
     graph_dir = os.path.join(data_dir, f'cge_data/{vul}/graph_feature')
     pattern_dir = os.path.join(data_dir, f'cge_data/{vul}/pattern_feature')
     all_names = []
@@ -239,7 +251,9 @@ def gen_knn_dl(client_id, vul, noise_type, noise_rate, batch, num_neigh):
     
 
 # 文件生成好的噪声标签
-def gen_lgv_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, model_type, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir="./"):
+def gen_lgv_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, model_type, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
     if model_type == "CBGRU":
         ds = gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, predefined_labels, data_dir)
     elif model_type == "CGE":
@@ -248,7 +262,9 @@ def gen_lgv_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, 
     return ds
     
 
-def gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir="./"):
+def gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
     word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
     fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
     # client_dir = f"./data/client_split/{vul}/client_{client_id}/"
@@ -276,7 +292,9 @@ def gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, random_noise, num_n
     return ds
 
 
-def gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir="./"):
+def gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
     graph_dir = os.path.join(data_dir, f'cge_data/{vul}/graph_feature')
     pattern_dir = os.path.join(data_dir, f'cge_data/{vul}/pattern_feature')
     # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
@@ -300,7 +318,9 @@ def gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, random_noise, num_nei
     return ds
 
 
-def gen_client_ds(model_type, client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir="./"):
+def gen_client_ds(model_type, client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
     if model_type == 'CBGRU':
         ds = gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, data_dir)
     elif model_type == 'CGE':
@@ -308,7 +328,9 @@ def gen_client_ds(model_type, client_id, vul, noise_type, noise_rate, random_noi
     return ds
 
 
-def gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir="./"):
+def gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
     word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
     fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
     # client_dir = f"./data/client_split/{vul}/client_{client_id}/"
@@ -337,39 +359,45 @@ def gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, random_noise, nu
     return ds
 
 
-def gen_cbgru_test_ds(vul):
-    word2vec_dir = f"./data/cbgru_data/{vul}/word2vec"
-    fastText_dir = f"./data/cbgru_data/{vul}/FastText"
+def gen_cbgru_test_ds(vul, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
+    word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
+    fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
     # names_path = f'./data/4_client_split/{vul}/contract_name_test.txt'
     # labels_path = f'./data/4_client_split/{vul}/label_test.csv'
-    names_path = f'./data/graduate_client_split/{vul}/contract_name_test.txt'
-    labels_path = f'./data/graduate_client_split/{vul}/label_test.csv'
+    names_path = os.path.join(data_dir, f"graduate_client_split/{vul}/contract_name_test.txt")
+    labels_path = os.path.join(data_dir, f"graduate_client_split/{vul}/label_test.csv")
     ds = CbgruDataset(word2vec_dir, fastText_dir, labels_path, names_path)
     return ds
 
 
-def gen_cge_test_ds(vul):
-    graph_dir = f'./data/cge_data/{vul}/graph_feature'
-    pattern_dir = f'./data/cge_data/{vul}/pattern_feature'
+def gen_cge_test_ds(vul, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
+    graph_dir = os.path.join(data_dir, f'cge_data/{vul}/graph_feature')
+    pattern_dir = os.path.join(data_dir, f'cge_data/{vul}/pattern_feature')
     # names_path = f'./data/4_client_split/{vul}/contract_name_test.txt'
     # labels_path = f'./data/4_client_split/{vul}/label_test.csv'
-    names_path = f'./data/graduate_client_split/{vul}/contract_name_test.txt'
-    labels_path = f'./data/graduate_client_split/{vul}/label_test.csv'
+    names_path = os.path.join(data_dir, f"graduate_client_split/{vul}/contract_name_test.txt")
+    labels_path = os.path.join(data_dir, f"graduate_client_split/{vul}/label_test.csv")
     ds = CgeDataset(graph_dir, pattern_dir, labels_path, names_path)
     return ds
 
 
-def gen_test_dl(model_type, vul):
+def gen_test_dl(model_type, vul, data_dir=None):
     if model_type == "CBGRU":
-        ds = gen_cbgru_test_ds(vul)
+        ds = gen_cbgru_test_ds(vul, data_dir=data_dir)
     elif model_type == "CGE":
-        ds = gen_cge_test_ds(vul)
+        ds = gen_cge_test_ds(vul, data_dir=data_dir)
 
     dl = DataLoader(ds)
     return dl
 
 
-def gen_cge_client_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir="./"):
+def gen_cge_client_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
     graph_dir = os.path.join(data_dir, f'cge_data/{vul}/graph_feature')
     pattern_dir = os.path.join(data_dir, f'cge_data/{vul}/pattern_feature')
     # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
@@ -390,24 +418,26 @@ def gen_cge_client_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigne
     return ds
 
 
-def gen_valid_ds(model_type, vul):
+def gen_valid_ds(model_type, vul, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
     if model_type == "CBGRU":
-        word2vec_dir = f"./data/cbgru_data/{vul}/word2vec"
-        fastText_dir = f"./data/cbgru_data/{vul}/FastText"
-        names_path = f'./data/graduate_client_split/{vul}/contract_name_valid.txt'
-        labels_path = f'./data/graduate_client_split/{vul}/label_valid.csv'
+        word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
+        fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
+        names_path = os.path.join(data_dir, f"graduate_client_split/{vul}/contract_name_valid.txt")
+        labels_path = os.path.join(data_dir, f"graduate_client_split/{vul}/label_valid.csv")
         ds = CbgruDataset(word2vec_dir, fastText_dir, labels_path, names_path)
     elif model_type == "CGE":
-        graph_dir = f'./data/cge_data/{vul}/graph_feature'
-        pattern_dir = f'./data/cge_data/{vul}/pattern_feature'
-        names_path = f'./data/graduate_client_split/{vul}/contract_name_valid.txt'
-        labels_path = f'./data/graduate_client_split/{vul}/label_valid.csv'
+        graph_dir = os.path.join(data_dir, f'cge_data/{vul}/graph_feature')
+        pattern_dir = os.path.join(data_dir, f'cge_data/{vul}/pattern_feature')
+        names_path = os.path.join(data_dir, f"graduate_client_split/{vul}/contract_name_valid.txt")
+        labels_path = os.path.join(data_dir, f"graduate_client_split/{vul}/label_valid.csv")
         ds = CgeDataset(graph_dir, pattern_dir, labels_path, names_path)
     return ds
 
 
-def gen_valid_dl(model_type, vul, data_dir="./"):
-    ds = gen_valid_ds(model_type, vul)
+def gen_valid_dl(model_type, vul, data_dir=None):
+    ds = gen_valid_ds(model_type, vul, data_dir=data_dir)
     dl = DataLoader(ds)
     return dl
         
@@ -425,7 +455,9 @@ def gen_cbgru_client_pure_dl(client_id, vul, noise_type, noise_rate, batch=16, d
     
     return dl
 
-def gen_cbgru_client_noise_dl(client_id, vul, noise_type, global_labels, noise_rate, batch, noise_labels, data_dir="./"):
+def gen_cbgru_client_noise_dl(client_id, vul, noise_type, global_labels, noise_rate, batch, noise_labels, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
     word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
     fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
     client_dir = os.path.join(data_dir, f"client_split/{vul}/client_{client_id}")

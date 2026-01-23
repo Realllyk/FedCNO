@@ -308,6 +308,8 @@ class Fed_PLE_client(object):
                     gc.collect()
 
     def validation(self):
+        # validation_dl = gen_cbgru_valid_dl(self.args.vul)
+        validation_dl = gen_valid_dl(self.args.model_type, self.args.vul, data_dir=self.args.data_dir)
         self.inner_model.eval()
         all_targets = []
         all_predictions = []
