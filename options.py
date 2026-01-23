@@ -328,5 +328,12 @@ def parse_args():
         help='Number of clusters for systemic noise generation'
     )
 
+    parser.add_argument(
+        '--data_dir',
+        type=str,
+        default='./data/',
+        help='directory of data'
+    )
+
     args = parser.parse_args()
     return args

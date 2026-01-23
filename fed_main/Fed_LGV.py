@@ -17,6 +17,59 @@ from trainers.client import Fed_LGV_client, Fed_Avg_client
 from global_test import global_test
 import random
 import time
+import concurrent.futures
+
+
+def train_warmup_client(client_id, args, global_model, criterion, dataset):
+    """
+    热身阶段单个客户端训练函数
+    """
+    client = Fed_Avg_client(args,
+                        criterion,
+                        None,
+                        dataset)
+    # 下发全局模型参数
+    client.model = copy.deepcopy(global_model)
+    client.train()
+    
+    weights = copy.deepcopy(client.get_parameters())
+    num_samples = client.result['sample']
+    result = client.result
+    
+    del client
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    return client_id, weights, num_samples, result
+
+
+def train_lgv_client(client_id, client, global_model, global_weight):
+    """
+    LGV正式训练阶段单个客户端训练函数
+    """
+    if hasattr(client, 'model'):
+        del client.model
+        
+    # 1. 接收全局模型
+    client.model = copy.deepcopy(global_model)
+    client.global_weight = global_weight
+    
+    # 2. 更新全局视图 (Global View)
+    # 关键步骤：利用当前全局模型提取特征，动态更新 KNN 概率和一致性
+    client.get_global_feature_global_knn_labels()
+    
+    # 3. 本地训练 (Local Training)
+    # 融合标签 -> 生成伪标签 -> 加权训练
+    client.train()
+    
+    weights = copy.deepcopy(client.get_parameters())
+    num_samples = client.result['sample']
+    result = client.result
+    
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    return client_id, weights, num_samples, result
 
 
 if __name__ == '__main__':
@@ -112,27 +165,23 @@ if __name__ == '__main__':
         print(f"Warm Up Epoch {epoch}: ")
         server.initialize_epoch_updates(epoch)
 
-        for client_id in range(args.client_num):
-            # 使用普通的 Fed_Avg_client 进行热身，不涉及 KNN 和标签修正
-            client = Fed_Avg_client(args,
-                                criterion,
-                                None,
-                                train_ds[i])
-            # 下发全局模型参数
-            client.model = copy.deepcopy(server.global_model)
-            client.train()
-            # 上传更新
-            server.save_train_updates(
-                copy.deepcopy(client.get_parameters()),
-                client.result['sample'],
-                client.result
-            )
-            print(f"client:{client_id}")
-            client.print_loss()
-            del client
-            torch.cuda.empty_cache()
-            gc.collect()
-        
+        # 并行热身训练
+        futures = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            for client_id in range(args.client_num):
+                futures.append(executor.submit(train_warmup_client, client_id, args, server.global_model, criterion, train_ds[client_id]))
+            
+            for future in futures:
+                client_id, weights, num_samples, result = future.result()
+                # 上传更新
+                server.save_train_updates(
+                    weights,
+                    num_samples,
+                    result
+                )
+                print(f"client:{client_id}")
+                print(f"loss is {result['loss']}")
+
         # 聚合参数 (FedAvg Aggregation)
         server.average_weights()
     
@@ -220,38 +269,24 @@ if __name__ == '__main__':
         print(f"Epoch {epoch}:")
         server.initialize_epoch_updates(epoch)
 
-        # sample clients
-        # selected_indices = np.random.choice(candidates, int(args.client_num*args.sample_rate), replace=False).tolist()
-
-        # for client_id in selected_indices:
-        for client_id in range(args.client_num):
-            client = clients[client_id]
-            del client.model
-            # 1. 接收全局模型
-            client.model = copy.deepcopy(server.global_model)
-            client.global_weight = server.global_weight
+        # 并行正式训练
+        futures = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            # for client_id in selected_indices:
+            for client_id in range(args.client_num):
+                # 提交任务
+                futures.append(executor.submit(train_lgv_client, client_id, clients[client_id], server.global_model, server.global_weight))
             
-            # 2. 更新全局视图 (Global View)
-            # 关键步骤：利用当前全局模型提取特征，动态更新 KNN 概率和一致性
-            # client.get_global_knn_labels(args.vul, args.noise_type, args.noise_rate)
-            # client.get_global_prob_labels(args.vul)
-            client.get_global_feature_knn_labels()
-            # client.get_global_feature_global_knn_labels()
-            
-            # 3. 本地训练 (Local Training)
-            # 融合标签 -> 生成伪标签 -> 加权训练
-            client.train()
-            
-            # 4. 上传更新
-            server.save_train_updates(
-                copy.deepcopy(client.get_parameters()),
-                client.result['sample'],
-                client.result
-            )
-            print(f"client:{client_id}")
-            client.print_loss()
-            torch.cuda.empty_cache()
-            gc.collect()
+            for future in futures:
+                client_id, weights, num_samples, result = future.result()
+                # 4. 上传更新
+                server.save_train_updates(
+                    weights,
+                    num_samples,
+                    result
+                )
+                print(f"client:{client_id}")
+                print(f"loss is {result['loss']}")
         
         # 5. 服务器聚合 (Aggregation)
         server.average_weights()

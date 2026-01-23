@@ -417,7 +417,10 @@ class Fed_Corr_client(Fed_Avg_client):
         args,
         criterion,
         model,
-        dataset
+        dataset,
+        client_id=None,
+        run_timestamp=None,
+        global_round=0
     ):
         super().__init__(
             args,
@@ -426,6 +429,35 @@ class Fed_Corr_client(Fed_Avg_client):
             dataset
         )
         self.dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True)
+        self.client_id = client_id
+        self.global_round = global_round
+        
+        # Setup logging
+        if self.client_id is not None:
+            lab_name = getattr(self.args, 'lab_name', 'default')
+            if run_timestamp is None:
+                run_timestamp = time.strftime("%Y%m%d_%H%M%S")
+            
+            model_type = getattr(self.args, 'model_type', 'unknown_model')
+            noise_type = getattr(self.args, 'noise_type', 'unknown_noise')
+            noise_rate = getattr(self.args, 'noise_rate', 0.0)
+            vul = getattr(self.args, 'vul', 'unknown_vul')
+            
+            log_dir = f"./runs/{lab_name}/{model_type}/{noise_type}/{noise_rate}/{vul}/{run_timestamp}/client_{self.client_id}"
+            os.makedirs(log_dir, exist_ok=True)
+            self.log_file_path = os.path.join(log_dir, "loss_log.txt")
+            
+            self.tb_writer = SummaryWriter(log_dir=log_dir)
+            
+            # Initialize global step based on global round and local epochs
+            # Assuming cbgru_local_epoch is used for training
+            local_epochs = getattr(self.args, 'cbgru_local_epoch', 1)
+            self.tb_global_step = self.global_round * local_epochs
+            
+            # Create file with header if it doesn't exist
+            if not os.path.exists(self.log_file_path):
+                with open(self.log_file_path, "w") as f:
+                    f.write("Epoch,Batch_Loss\n")
         
 
     def train(self):
@@ -457,6 +489,13 @@ class Fed_Corr_client(Fed_Avg_client):
                 del x1, x2, y, outputs, loss
                 torch.cuda.empty_cache()
                 gc.collect()
+
+            # Log loss
+            if hasattr(self, 'client_id') and self.client_id is not None:
+                self.tb_writer.add_scalar("loss/train", self.result['loss'], self.tb_global_step)
+                with open(self.log_file_path, "a") as f:
+                    f.write(f"{self.tb_global_step},{epoch},{self.result['loss']}\n")
+                self.tb_global_step += 1
 
     
     def get_output(self):
@@ -542,11 +581,9 @@ class Fed_LGV_client(object):
         # 该方法在训练开始前调用一次，利用本地的静态预训练特征（如 Word2Vec/FastText）
         # 来建立初始的标签概率分布和一致性基准。
         
-        pre_feature_dir = f"./data/pretrain_feature/{vul}"
-        # name_path = f"./data/client_split/{vul}/client_{self.client_id}/cbgru_contract_name_train.txt"
-        # name_path = f"./data/4_client_split/{vul}/client_{self.client_id}/contract_name_train.txt"
-        # name_path = f"./data/graduate_client_split/{vul}/cbgru/client_{self.client_id}/contract_name_train.txt"
-        name_path = f"./data/graduate_client_split/{vul}/client_{self.client_id}/contract_name_train.txt"
+        pre_feature_dir = os.path.join(self.args.data_dir, f"pretrain_feature/{vul}")
+        # name_path = os.path.join(self.args.data_dir, f"client_split/{vul}/client_{self.client_id}/cbgru_contract_name_train.txt")
+        name_path = os.path.join(self.args.data_dir, f"4_client_split/{vul}/client_{self.client_id}/contract_name_train.txt")
         labels = self.dataset.labels
 
         # 读取数据和预训练特征
@@ -601,9 +638,9 @@ class Fed_LGV_client(object):
 
     # 使用全局模型标签来进行投票
     def get_global_knn_labels(self, vul, noise_type, noise_rate):
-        pre_feature_dir = f"./data/pretrain_feature/{vul}"
-        # name_path = f"./data/client_split/{vul}/client_{self.client_id}/cbgru_contract_name_train.txt"
-        # name_path = f"./data/4_client_split/{vul}/client_{self.client_id}/contract_name_train.txt"
+        pre_feature_dir = os.path.join(self.args.data_dir, f"pretrain_feature/{vul}")
+        # name_path = os.path.join(self.args.data_dir, f"client_split/{vul}/client_{self.client_id}/cbgru_contract_name_train.txt")
+        # name_path = os.path.join(self.args.data_dir, f"4_client_split/{vul}/client_{self.client_id}/contract_name_train.txt")
         name_path = f"./data/graduate_client_split/{vul}/client_{self.client_id}/contract_name_train.txt"
 
         # Before local training, new local model is global model
@@ -1117,51 +1154,7 @@ class Fed_CLC_client(object):
         self.data_loader = DataLoader(self.avai_dataset, batch_size=self.args.batch, shuffle=True)
 
 
-class Fed_Corr_client(Fed_Avg_client):
-    def __init__(
-        self,
-        args,
-        criterion,
-        model,
-        dataset
-    ):
-        super().__init__(
-            args,
-            criterion,
-            model,
-            dataset
-        )
 
-        self.dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True)
-
-    def train(self):
-        if self.args.model_type == "CBGRU":
-            lr = self.args.cbgru_local_lr
-        elif self.args.model_type == "CGE":
-            lr = self.args.cge_local_lr
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-
-        self.result = dict()
-        device = self.args.device
-        self.result['sample'] = len(self.dataloader)
-
-        self.model.train()
-        for epoch in range(self.args.cbgru_local_epoch):
-            self.result['loss'] = 0
-            for x1, x2, y in self.dataloader:
-                optimizer.zero_grad()
-                x1, x2, y = x1.to(device), x2.to(device), y.to(device)
-                outputs = self.model(x1, x2)
-                y = y.flatten().long()
-                loss = self.criterion(outputs, y)
-                loss = loss.mean()
-                self.result['loss'] = self.result['loss'] + loss.item()
-                loss.backward()
-                optimizer.step()
-
-                del x1, x2, y, outputs, loss
-                torch.cuda.empty_cache()
-                gc.collect()
 
 
 class Fed_Ablation_client(Fed_PLE_client):

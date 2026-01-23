@@ -70,14 +70,14 @@ if __name__ == "__main__":
     dataloader_dict["pure"] = list()
     noise_labels = list()
     for i in range(args.client_num):
-        noise_dl, input_size, time_stamp = gen_cbgru_dl(client_id=i, vul=args.vul, noise_type=args.noise_type, noise_rate=args.noise_rate, batch=args.batch, shuffle=False)
+        noise_dl, input_size, time_stamp = gen_cbgru_dl(client_id=i, vul=args.vul, noise_type=args.noise_type, noise_rate=args.noise_rate, batch=args.batch, shuffle=False, data_dir=args.data_dir)
         dataloader_dict["noise"].append(noise_dl)
-        pure_dl = gen_cbgru_client_pure_dl(client_id=i, vul = args.vul, noise_type=args.noise_type, noise_rate=args.noise_rate, batch=args.batch)
+        pure_dl = gen_cbgru_client_pure_dl(client_id=i, vul = args.vul, noise_type=args.noise_type, noise_rate=args.noise_rate, batch=args.batch, data_dir=args.data_dir)
         dataloader_dict["pure"].append(pure_dl)
 
-        word2vec_dir = f"./data/cbgru_data/{args.vul}/word2vec"
-        fastText_dir = f"./data/cbgru_data/{args.vul}/FastText"
-        client_dir = f"./data/client_split/{args.vul}/client_{i}"
+        word2vec_dir = os.path.join(args.data_dir, f"cbgru_data/{args.vul}/word2vec")
+        fastText_dir = os.path.join(args.data_dir, f"cbgru_data/{args.vul}/FastText")
+        client_dir = os.path.join(args.data_dir, f"client_split/{args.vul}/client_{i}")
         names_path = os.path.join(client_dir, "cbgru_contract_name_train.txt")
         labels_path = os.path.join(client_dir, f"{args.noise_type}_label_train_000.csv")
         noise_labels.append(flip_values(names_path, labels_path, args.noise_rate))
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     )
 
     for i in range(args.client_num):
-        valid_dl = gen_cbgru_client_valid_dl(i, args.vul, args.batch, noise_labels[i], args.valid_frac)
+        valid_dl = gen_cbgru_client_valid_dl(i, args.vul, args.batch, noise_labels[i], args.valid_frac, data_dir=args.data_dir)
         dataloader_dict["valid"].append(valid_dl)
 
     # 初始化Client
@@ -139,7 +139,7 @@ if __name__ == "__main__":
                     gc.collect()
 
             conc_labels = torch.cat(global_labels, dim = 0)
-            noise_dl = gen_cbgru_client_noise_dl(client_id, args.vul, args.noise_type, conc_labels, args.noise_rate, args.batch, noise_labels[client_id])
+            noise_dl = gen_cbgru_client_noise_dl(client_id, args.vul, args.noise_type, conc_labels, args.noise_rate, args.batch, noise_labels[client_id], data_dir=args.data_dir)
             client.noise_dataloader = noise_dl
 
             # 本地训练并保存训练结果
@@ -163,7 +163,7 @@ if __name__ == "__main__":
         print(epoch)
     
     # server.global_model.load_state_dict(server.best_model)
-    test_dl = gen_cbgru_valid_dl(args.vul, id=0, batch=args.batch)
+    test_dl = gen_cbgru_valid_dl(args.vul, id=0, batch=args.batch, data_dir=args.data_dir)
     global_test(server.global_model, test_dl, criterion, args, 'test_Fed_CBGRU_PLE')
             
 

@@ -14,18 +14,18 @@ from data_processing.preprocessing import get_cbgru_feature, relabel_with_pretra
 
 
 # 生成cbgru使用的dataloader
-def gen_cbgru_dl(client_id, vul, noise_type, noise_rate, batch = 16, shuffle=True, random_noise = False):
-    # word2vec_dir = f"./data/cbgru_data/{vul}/word2vec"
-    # fastText_dir = f"./data/cbgru_data/{vul}/FastText"
-    # client_dir = f"./data/client_split/{vul}/client_{client_id}/"
+def gen_cbgru_dl(client_id, vul, noise_type, noise_rate, batch = 16, shuffle=True, random_noise = False, data_dir="./"):
+    # word2vec_dir = f"/root/autodl-tmp/data/cbgru_data/{vul}/word2vec"
+    # fastText_dir = f"/root/autodl-tmp/data/cbgru_data/{vul}/FastText"
+    # client_dir = f"/root/autodl-tmp/data/client_split/{vul}/client_{client_id}/"
     # names_path = os.path.join(client_dir, "cbgru_contract_name_train.txt")
     # labels_path = os.path.join(client_dir, f"{noise_type}_label_train_{noise_rate*100:03.0f}.csv")
 
     # ds = CBGruDataset(word2vec_dir, fastText_dir, labels_path, names_path)
 
-    word2vec_dir = f"./data/cbgru_data/{vul}/word2vec"
-    fastText_dir = f"./data/cbgru_data/{vul}/FastText"
-    client_dir = f"./data/client_split/{vul}/client_{client_id}/"
+    word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
+    fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
+    client_dir = os.path.join(data_dir, f"client_split/{vul}/client_{client_id}/")
     names_path = os.path.join(client_dir, "cbgru_contract_name_train.txt")
     if noise_type == 'fn_noise':
         labels_path = os.path.join(client_dir, f"non_noise_label_train_000.csv")
@@ -43,10 +43,10 @@ def gen_cbgru_dl(client_id, vul, noise_type, noise_rate, batch = 16, shuffle=Tru
     return dl, 100, 300
 
 
-def gen_cbgru_client_valid_dl(client_id, vul, batch, noise_labels, frac):
-    word2vec_dir = f"./data/cbgru_data/{vul}/word2vec"
-    fastText_dir = f"./data/cbgru_data/{vul}/FastText"
-    client_dir = f"./data/client_split/{vul}/client_{client_id}"
+def gen_cbgru_client_valid_dl(client_id, vul, batch, noise_labels, frac, data_dir="./"):
+    word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
+    fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
+    client_dir = os.path.join(data_dir, f"client_split/{vul}/client_{client_id}")
     # word2vec_dir = f"./new_dataset/cbgru_data/{vul}/word2vec"
     # fastText_dir = f"./new_dataset/cbgru_data/{vul}/FastText"
     # client_dir = f"./new_dataset/client_split/{vul}/client_{client_id}/"
@@ -64,11 +64,11 @@ def gen_cbgru_client_valid_dl(client_id, vul, batch, noise_labels, frac):
     return dl
 
 
-def gen_cbgru_valid_dl(vul, id=0, batch=16):
+def gen_cbgru_valid_dl(vul, id=0, batch=16, data_dir="./"):
     embeddings = ['word2vec', 'FastText']
     file_paths = []
     for emb in embeddings:
-        file_paths.append(f'./data/cbgru_data/{vul}/cbgru_valid_dataset_{emb}_fragment_vectors.pkl')
+        file_paths.append(os.path.join(data_dir, f'cbgru_data/{vul}/cbgru_valid_dataset_{emb}_fragment_vectors.pkl'))
         # file_paths.append(f'../merge_sc_dataset/client_split/{vul}/client_{id}/cbgru_non_noise_{0.05*100:03.0f}_{emb}_fragment_vectors.pkl')
 
     x1, y = get_cbgru_feature(file_paths[0])
@@ -85,29 +85,29 @@ def gen_cbgru_valid_dl(vul, id=0, batch=16):
     return dl
 
     
-def gen_whole_dataset(model_type, client_num, vul, noise_type, noise_rates, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42):
+def gen_whole_dataset(model_type, client_num, vul, noise_type, noise_rates, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir="./"):
     if(model_type == "CBGRU"):
-        return gen_cbgru_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed)
+        return gen_cbgru_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, data_dir)
     else:
-        return gen_cge_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed)
+        return gen_cge_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, data_dir)
 
 
-def gen_cbgru_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42):
-    word2vec_dir = f"./data/cbgru_data/{vul}/word2vec"
-    fastText_dir = f"./data/cbgru_data/{vul}/FastText"
+def gen_cbgru_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir="./"):
+    word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
+    fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
     all_names = []
     all_labels = []
     # names_path = f"./data/4_client_split/{vul}/client_0/contract_name_train.txt"
     # labels_path = f"./data/4_client_split/{vul}/client_0/label_train.csv"
-    names_path = f"./data/graduate_client_split/{vul}/client_0/contract_name_train.txt"
-    labels_path = f"./data/graduate_client_split/{vul}/client_0/label_train.csv"
+    names_path = os.path.join(data_dir, f"graduate_client_split/{vul}/client_0/contract_name_train.txt")
+    labels_path = os.path.join(data_dir, f"graduate_client_split/{vul}/client_0/label_train.csv")
     ds = CBGruDataset(word2vec_dir, fastText_dir, labels_path, names_path)
     data_indices = []
     offset = 0
     
     for client_id in range(client_num):
         # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
-        client_dir = f"./data/graduate_client_split/{vul}/client_{client_id}/"
+        client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{client_id}/")
         names_path = os.path.join(client_dir, "contract_name_train.txt")
         labels_path = os.path.join(client_dir, f"label_train.csv")
         names = []
@@ -124,7 +124,7 @@ def gen_cbgru_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh=
         if noise_type == 'non_noise' or noise_type == 'fn_noise':
             noise_labels = gen_noise_labels(names_path, labels_path, noise_type, noise_rates[client_id])
         elif noise_type == 'sys_noise':
-            pre_feature_dir = f"./data/pretrain_feature/{vul}"
+            pre_feature_dir = os.path.join(data_dir, f"pretrain_feature/{vul}")
             # noise_labels = gen_sys_noise_labels(names_path, labels_path, pre_feature_dir, 'sys_noise', noise_rates[client_id], num_neigh)
             # 使用基于 KMeans 的新系统性噪声生成方法
             cluster_indices = assigned_clusters[client_id] if assigned_clusters else None
@@ -139,22 +139,22 @@ def gen_cbgru_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh=
     return ds, data_indices
 
 
-def gen_cge_whole_dataset(client_num, vul, noise_type, noise_rate, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42):
-    graph_dir = f'./data/cge_data/{vul}/graph_feature'
-    pattern_dir = f'./data/cge_data/{vul}/pattern_feature'
+def gen_cge_whole_dataset(client_num, vul, noise_type, noise_rate, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir="./"):
+    graph_dir = os.path.join(data_dir, f'cge_data/{vul}/graph_feature')
+    pattern_dir = os.path.join(data_dir, f'cge_data/{vul}/pattern_feature')
     all_names = []
     all_labels = []
     # names_path = f"./data/4_client_split/{vul}/client_0/contract_name_train.txt"
     # labels_path = f"./data/4_client_split/{vul}/client_0/label_train.csv"
-    names_path = f"./data/graduate_client_split/{vul}/client_0/contract_name_train.txt"
-    labels_path = f"./data/graduate_client_split/{vul}/client_0/label_train.csv"
+    names_path = os.path.join(data_dir, f"graduate_client_split/{vul}/client_0/contract_name_train.txt")
+    labels_path = os.path.join(data_dir, f"graduate_client_split/{vul}/client_0/label_train.csv")
     ds = CgeDataset(graph_dir, pattern_dir, labels_path, names_path)
     data_indices = []
     offset = 0
     
     for client_id in range(client_num):
         # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
-        client_dir = f"./data/graduate_client_split/{vul}/client_{client_id}/"
+        client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{client_id}/")
         names_path = os.path.join(client_dir, "contract_name_train.txt")
         labels_path = os.path.join(client_dir, f"label_train.csv")
         names = []
@@ -171,7 +171,7 @@ def gen_cge_whole_dataset(client_num, vul, noise_type, noise_rate, num_neigh=0, 
         if noise_type == 'non_noise' or noise_type == 'fn_noise':
             noise_labels = gen_noise_labels(names_path, labels_path, noise_type, noise_rate)
         elif noise_type == 'sys_noise':
-            pre_feature_dir = f"./data/pretrain_feature/{vul}"
+            pre_feature_dir = os.path.join(data_dir, f"pretrain_feature/{vul}")
             # noise_labels = gen_sys_noise_labels(names_path, labels_path, pre_feature_dir, 'sys_noise', noise_rate, num_neigh)
             # 使用基于 KMeans 的新系统性噪声生成方法
             cluster_indices = assigned_clusters[client_id] if assigned_clusters else None
@@ -239,22 +239,22 @@ def gen_knn_dl(client_id, vul, noise_type, noise_rate, batch, num_neigh):
     
 
 # 文件生成好的噪声标签
-def gen_lgv_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, model_type, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None):
+def gen_lgv_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, model_type, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir="./"):
     if model_type == "CBGRU":
-        ds = gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, predefined_labels)
+        ds = gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, predefined_labels, data_dir)
     elif model_type == "CGE":
-        ds = gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, predefined_labels)
+        ds = gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, predefined_labels, data_dir)
         
     return ds
     
 
-def gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None):
-    word2vec_dir = f"./data/cbgru_data/{vul}/word2vec"
-    fastText_dir = f"./data/cbgru_data/{vul}/FastText"
+def gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir="./"):
+    word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
+    fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
     # client_dir = f"./data/client_split/{vul}/client_{client_id}/"
     # names_path = os.path.join(client_dir, "cbgru_contract_name_train.txt")
     # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
-    client_dir = f"./data/graduate_client_split/{vul}/client_{client_id}/"
+    client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{client_id}/")
     names_path = os.path.join(client_dir, "contract_name_train.txt")
     labels_path = os.path.join(client_dir, f"label_train.csv")
     ds = CustomerDataset(word2vec_dir, fastText_dir, labels_path, names_path)
@@ -266,7 +266,7 @@ def gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, random_noise, num_n
             if noise_type == 'non_noise' or noise_type == 'fn_noise':
                 noise_labels = gen_noise_labels(names_path, labels_path, noise_type, noise_rate)
             elif noise_type == 'sys_noise':
-                pre_feature_dir = f"./data/pretrain_feature/{vul}"
+                pre_feature_dir = os.path.join(data_dir, f"pretrain_feature/{vul}")
                 # noise_labels = gen_sys_noise_labels(names_path, labels_path, pre_feature_dir, 'sys_noise', noise_rate, num_neigh)
                 # 使用基于 KMeans 的新系统性噪声生成方法
                 cluster_indices = assigned_clusters[client_id] if assigned_clusters else None
@@ -276,11 +276,11 @@ def gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, random_noise, num_n
     return ds
 
 
-def gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None):
-    graph_dir = f'./data/cge_data/{vul}/graph_feature'
-    pattern_dir = f'./data/cge_data/{vul}/pattern_feature'
+def gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir="./"):
+    graph_dir = os.path.join(data_dir, f'cge_data/{vul}/graph_feature')
+    pattern_dir = os.path.join(data_dir, f'cge_data/{vul}/pattern_feature')
     # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
-    client_dir = f"./data/graduate_client_split/{vul}/client_{client_id}/"
+    client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{client_id}/")
     names_path = os.path.join(client_dir, "contract_name_train.txt")
     labels_path = os.path.join(client_dir, f"label_train.csv")
     ds = LgvCgeDataset(graph_dir, pattern_dir, labels_path, names_path)
@@ -291,7 +291,7 @@ def gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, random_noise, num_nei
         if noise_type == 'non_noise' or noise_type == 'fn_noise':
             noise_labels = gen_noise_labels(names_path, labels_path, noise_type, noise_rate)
         elif noise_type == 'sys_noise':
-            pre_feature_dir = f"./data/pretrain_feature/{vul}"
+            pre_feature_dir = os.path.join(data_dir, f"pretrain_feature/{vul}")
             # noise_labels = gen_sys_noise_labels(names_path, labels_path, pre_feature_dir, 'sys_noise', noise_rate, num_neigh)
             # 使用基于 KMeans 的新系统性噪声生成方法
             cluster_indices = assigned_clusters[client_id] if assigned_clusters else None
@@ -300,17 +300,17 @@ def gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, random_noise, num_nei
     return ds
 
 
-def gen_client_ds(model_type, client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42):
+def gen_client_ds(model_type, client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir="./"):
     if model_type == 'CBGRU':
-        ds = gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed)
+        ds = gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, data_dir)
     elif model_type == 'CGE':
-        ds = gen_cge_client_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed)
+        ds = gen_cge_client_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, data_dir)
     return ds
 
 
-def gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42):
-    word2vec_dir = f"./data/cbgru_data/{vul}/word2vec"
-    fastText_dir = f"./data/cbgru_data/{vul}/FastText"
+def gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir="./"):
+    word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
+    fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
     # client_dir = f"./data/client_split/{vul}/client_{client_id}/"
     # names_path = os.path.join(client_dir, "cbgru_contract_name_train.txt")
     # if noise_type == 'fn_noise' or noise_type == 'sys_noise':
@@ -319,7 +319,7 @@ def gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, random_noise, nu
     #     labels_path = os.path.join(client_dir, f"{noise_type}_label_train_{noise_rate*100:03.0f}.csv")
     # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
     # client_dir = f"./data/graduate_client_split/{vul}/cbgru/client_{client_id}/"
-    client_dir = f"./data/graduate_client_split/{vul}/client_{client_id}/"
+    client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{client_id}/")
     names_path = os.path.join(client_dir, "contract_name_train.txt")
     labels_path = os.path.join(client_dir, f"label_train.csv")
     
@@ -327,7 +327,7 @@ def gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, random_noise, nu
     if noise_type == 'non_noise' or noise_type == 'fn_noise':
         noise_labels = gen_noise_labels(names_path, labels_path, noise_type, noise_rate)
     elif noise_type == 'sys_noise':
-        pre_feature_dir = f"./data/pretrain_feature/{vul}"
+        pre_feature_dir = os.path.join(data_dir, f"pretrain_feature/{vul}")
         # noise_labels = gen_sys_noise_labels(names_path, labels_path, pre_feature_dir, 'sys_noise', noise_rate, num_neigh)
         # 使用基于 KMeans 的新系统性噪声生成方法
         cluster_indices = assigned_clusters[client_id] if assigned_clusters else None
@@ -369,11 +369,11 @@ def gen_test_dl(model_type, vul):
     return dl
 
 
-def gen_cge_client_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42):
-    graph_dir = f'./data/cge_data/{vul}/graph_feature'
-    pattern_dir = f'./data/cge_data/{vul}/pattern_feature'
+def gen_cge_client_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir="./"):
+    graph_dir = os.path.join(data_dir, f'cge_data/{vul}/graph_feature')
+    pattern_dir = os.path.join(data_dir, f'cge_data/{vul}/pattern_feature')
     # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
-    client_dir = f"./data/graduate_client_split/{vul}/client_{client_id}/"
+    client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{client_id}/")
     names_path = os.path.join(client_dir, "contract_name_train.txt")
     labels_path = os.path.join(client_dir, f"label_train.csv")
     ds = CgeDataset(graph_dir, pattern_dir, labels_path, names_path)
@@ -381,7 +381,7 @@ def gen_cge_client_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigne
     if noise_type == 'non_noise' or noise_type == 'fn_noise':
         noise_labels = gen_noise_labels(names_path, labels_path, noise_type, noise_rate)
     elif noise_type == 'sys_noise':
-        pre_feature_dir = f"./data/pretrain_feature/{vul}"
+        pre_feature_dir = os.path.join(data_dir, f"pretrain_feature/{vul}")
         # noise_labels = gen_sys_noise_labels(names_path, labels_path, pre_feature_dir, 'sys_noise', noise_rate, num_neigh)
         # 使用基于 KMeans 的新系统性噪声生成方法
         cluster_indices = assigned_clusters[client_id] if assigned_clusters else None
@@ -406,17 +406,17 @@ def gen_valid_ds(model_type, vul):
     return ds
 
 
-def gen_valid_dl(model_type, vul):
+def gen_valid_dl(model_type, vul, data_dir="./"):
     ds = gen_valid_ds(model_type, vul)
     dl = DataLoader(ds)
     return dl
         
 
 #  ---------------------------------test---------------------------------------
-def gen_cbgru_client_pure_dl(client_id, vul, noise_type, noise_rate, batch=16):
-    word2vec_dir = f"./data/cbgru_data/{vul}/word2vec"
-    fastText_dir = f"./data/cbgru_data/{vul}/FastText"
-    client_dir = f"./data/client_split/{vul}/client_{client_id}/"
+def gen_cbgru_client_pure_dl(client_id, vul, noise_type, noise_rate, batch=16, data_dir="./"):
+    word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
+    fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
+    client_dir = os.path.join(data_dir, f"client_split/{vul}/client_{client_id}/")
     names_path = os.path.join(client_dir, "cbgru_contract_name_train.txt")
     labels_path = os.path.join(client_dir, f"{noise_type}_label_train_000.csv")
 
@@ -425,10 +425,10 @@ def gen_cbgru_client_pure_dl(client_id, vul, noise_type, noise_rate, batch=16):
     
     return dl
 
-def gen_cbgru_client_noise_dl(client_id, vul, noise_type, global_labels, noise_rate, batch, noise_labels):
-    word2vec_dir = f"./data/cbgru_data/{vul}/word2vec"
-    fastText_dir = f"./data/cbgru_data/{vul}/FastText"
-    client_dir = f"./data/client_split/{vul}/client_{client_id}"
+def gen_cbgru_client_noise_dl(client_id, vul, noise_type, global_labels, noise_rate, batch, noise_labels, data_dir="./"):
+    word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
+    fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
+    client_dir = os.path.join(data_dir, f"client_split/{vul}/client_{client_id}")
     names_path = os.path.join(client_dir, "cbgru_contract_name_train.txt")
     # labels_path = os.path.join(client_dir, f"{noise_type}_label_train_{noise_rate*100:03.0f}.csv")
     labels_path = os.path.join(client_dir, f"{noise_type}_label_train_000.csv")
@@ -438,9 +438,3 @@ def gen_cbgru_client_noise_dl(client_id, vul, noise_type, global_labels, noise_r
     dl = DataLoader(ds, batch, shuffle=True)
 
     return dl
-
-
-    
-
-
-    

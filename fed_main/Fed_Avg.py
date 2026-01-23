@@ -15,8 +15,34 @@ from trainers.server import Server
 from trainers.client import Fed_Avg_client
 from global_test import global_test
 import random
-import time
-import numpy as np
+import concurrent.futures
+
+
+def train_one_client(client_id, args, global_model, criterion, dataset):
+    """
+    单个客户端训练函数
+    """
+    client = Fed_Avg_client(args,
+                        criterion,
+                        None,
+                        dataset)
+    # print(f"Create Client {client_id}!")
+    # 深拷贝全局模型，确保线程安全，每个客户端拥有独立的模型副本
+    client.model = copy.deepcopy(global_model)
+    client.train()
+    
+    # 获取训练后的参数权重
+    weights = copy.deepcopy(client.get_parameters())
+    num_samples = client.result['sample']
+    result = client.result
+    loss = client.result['loss']
+    
+    # 清理内存
+    del client
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    return client_id, weights, num_samples, result, loss
 
 
 if __name__ == '__main__':
@@ -108,22 +134,22 @@ if __name__ == '__main__':
     for epoch in range(args.epoch):
         server.initialize_epoch_updates(epoch)
 
-        for client_id in range(args.client_num):
-            client = clients[client_id]
-            # Update local model with latest global model
-            client.model = copy.deepcopy(server.global_model)
+        # Parallel training
+        futures = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            for client_id in range(args.client_num):
+                # Correctly using client_id to access the corresponding dataset
+                futures.append(executor.submit(train_one_client, client_id, args, server.global_model, criterion, train_ds[client_id]))
             
-            client.train()
-            server.save_train_updates(
-                    copy.deepcopy(client.get_parameters()),
-                    client.result['sample'],
-                    client.result
-            )
-            print(f"client:{client_id}")
-            client.print_loss()
-            # del client
-            torch.cuda.empty_cache()
-            gc.collect()
+            for future in futures:
+                client_id, weights, num_samples, result, loss = future.result()
+                server.save_train_updates(
+                        weights,
+                        num_samples,
+                        result
+                )
+                print(f"client:{client_id}")
+                print(f"loss is {loss}")
 
         server.average_weights()
         # CBGRU_test(server.global_model, test_dl, criterion, args, 'Fed_CBGRU')
@@ -131,5 +157,3 @@ if __name__ == '__main__':
     
     
     global_test(server.global_model, test_dl, criterion, args, args.lab_name, run_timestamp=run_timestamp)
-        
-    
