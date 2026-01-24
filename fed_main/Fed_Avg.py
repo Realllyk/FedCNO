@@ -74,7 +74,8 @@ if __name__ == '__main__':
         args.vul, 
         args.noise_type, 
         n_clusters=args.n_clusters, 
-        seed=int(args.seed)
+        seed=int(args.seed),
+        data_dir=args.data_dir
     )
 
     train_ds = list()
@@ -97,6 +98,19 @@ if __name__ == '__main__':
             data_dir=args.data_dir
         )
         train_ds.append(ds)
+
+        # DEBUG: Check if noise is applied
+        if args.noise_type != 'non_noise':
+            import pandas as pd
+            client_dir = os.path.join(args.data_dir, f"graduate_client_split/{args.vul}/client_{i}/")
+            labels_path = os.path.join(client_dir, f"label_train.csv")
+            if os.path.exists(labels_path):
+                clean_labels = pd.read_csv(labels_path, header=None).iloc[:, 0].values
+                noise_labels = np.array(ds.labels)
+                diff = np.sum(clean_labels != noise_labels)
+                print(f"[DEBUG] Client {i}: Noise Rate={noise_rates[i]}, Clean vs Noisy Diff={diff}/{len(clean_labels)} ({diff/len(clean_labels):.4f})")
+            else:
+                print(f"[DEBUG] Client {i}: Label file not found at {labels_path}")
 
     criterion = nn.CrossEntropyLoss()
 
