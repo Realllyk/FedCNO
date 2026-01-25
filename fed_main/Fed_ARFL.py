@@ -4,10 +4,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import copy
 import gc
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from options import parse_args
 from data_processing.dataloader_manager import gen_client_ds, gen_valid_dl
+from data_processing.preprocessing import coordinate_sys_noise_clusters
 from models.ClassiFilerNet import ClassiFilerNet
 from models.CGE_Variants import CGEVariant
 from trainers.server import ARFL_Server
@@ -30,11 +32,57 @@ if __name__ == '__main__':
     else:
         noise_rates = [args.noise_rate] * 4
 
+    # Set random seed
+    if args.seed is not None:
+        random.seed(args.seed)
+        np.random.seed(int(args.seed))
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+
+    # -------------------------------------------------------------------------
+    # 系统性噪声协调 (Systemic Noise Coordination)
+    # -------------------------------------------------------------------------
+    assigned_clusters_dict, global_cluster_map = coordinate_sys_noise_clusters(
+        args.client_num, 
+        args.vul, 
+        args.noise_type, 
+        n_clusters=args.n_clusters, 
+        seed=int(args.seed),
+        data_dir=args.data_dir
+    )
+
     clients = list()
     train_ds = list()
     for i in range(args.client_num):
-        ds = gen_client_ds(args.model_type, i, args.vul, args.noise_type, noise_rates[i], args.random_noise, args.num_neigh)
+        ds = gen_client_ds(
+            args.model_type, 
+            i, 
+            args.vul, 
+            args.noise_type, 
+            noise_rates[i], 
+            args.random_noise, 
+            args.num_neigh,
+            assigned_clusters=assigned_clusters_dict,
+            global_cluster_map=global_cluster_map,
+            n_clusters=args.n_clusters,
+            seed=int(args.seed),
+            data_dir=args.data_dir
+        )
         train_ds.append(ds)
+
+        # DEBUG: Check if noise is applied
+        if args.noise_type != 'non_noise':
+            import pandas as pd
+            client_dir = os.path.join(args.data_dir, f"graduate_client_split/{args.vul}/client_{i}/")
+            labels_path = os.path.join(client_dir, f"label_train.csv")
+            if os.path.exists(labels_path):
+                clean_labels = pd.read_csv(labels_path, header=None).iloc[:, 0].values
+                noise_labels = np.array(ds.labels)
+                diff = np.sum(clean_labels != noise_labels)
+                print(f"[DEBUG] Client {i}: Noise Rate={noise_rates[i]}, Clean vs Noisy Diff={diff}/{len(clean_labels)} ({diff/len(clean_labels):.4f})")
+            else:
+                print(f"[DEBUG] Client {i}: Label file not found at {labels_path}")
 
     for i in range(args.client_num):
         client = Fed_ARFL_client(
