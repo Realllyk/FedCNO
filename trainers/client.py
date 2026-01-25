@@ -162,11 +162,13 @@ class Fed_Avg_client(object):
                 torch.cuda.empty_cache()
                 gc.collect()
             
-            self.tb_writer.add_scalar("loss/train", self.result['loss'], self.tb_global_step)
+            # Record Average Loss
+            avg_loss = self.result['loss'] / len(dataloader)
+            self.tb_writer.add_scalar("loss/train", avg_loss, self.tb_global_step)
             
             # Log loss to text file
             with open(self.log_file_path, "a") as f:
-                f.write(f"{self.tb_global_step},{epoch},{self.result['loss']}\n")
+                f.write(f"{self.tb_global_step},{epoch},{avg_loss}\n")
                 
             self.tb_global_step += 1
 
@@ -960,11 +962,13 @@ class Fed_LGV_client(object):
                 torch.cuda.empty_cache()
                 gc.collect()
 
-            self.tb_writer.add_scalar("loss/train", self.result['loss'], self.tb_global_step)
+            # Record Average Loss
+            avg_loss = self.result['loss'] / len(dl)
+            self.tb_writer.add_scalar("loss/train", avg_loss, self.tb_global_step)
             
             # Log loss to text file
             with open(self.log_file_path, "a") as f:
-                f.write(f"{self.tb_global_step},{epoch},{self.result['loss']}\n")
+                f.write(f"{self.tb_global_step},{epoch},{avg_loss}\n")
                 
             self.tb_global_step += 1
     

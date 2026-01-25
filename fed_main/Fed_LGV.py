@@ -20,14 +20,16 @@ import time
 import concurrent.futures
 
 
-def train_warmup_client(client_id, args, global_model, criterion, dataset):
+def train_warmup_client(client_id, args, global_model, criterion, dataset, run_timestamp):
     """
     热身阶段单个客户端训练函数
     """
     client = Fed_Avg_client(args,
                         criterion,
                         None,
-                        dataset)
+                        dataset,
+                        client_id=client_id,
+                        run_timestamp=run_timestamp)
     # 下发全局模型参数
     client.model = copy.deepcopy(global_model)
     client.train()
@@ -145,13 +147,14 @@ if __name__ == '__main__':
         global_model = CGEVariant()
         reduction = 'mean'
     global_model = global_model.to(args.device)
+    run_timestamp = time.strftime("%Y%m%d_%H%M%S")
     server = LGV_server(
         args,
         global_model,
         args.device,
         criterion,
         args.global_weight,
-        run_timestamp=time.strftime("%Y%m%d_%H%M%S")
+        run_timestamp=run_timestamp
     )
 
     #  Warm up
@@ -170,7 +173,7 @@ if __name__ == '__main__':
         futures = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             for client_id in range(args.client_num):
-                futures.append(executor.submit(train_warmup_client, client_id, args, server.global_model, criterion, train_ds[client_id]))
+                futures.append(executor.submit(train_warmup_client, client_id, args, server.global_model, criterion, train_ds[client_id], run_timestamp))
             
             for future in futures:
                 client_id, weights, num_samples, result = future.result()
@@ -235,7 +238,6 @@ if __name__ == '__main__':
     # -------------------------------------------------------------------------
     # 每个客户端被实例化为 Fed_LGV_client，并进行本地视角的初始化。
     clients = []
-    run_timestamp = time.strftime("%Y%m%d_%H%M%S")
 
     for i in range(args.client_num):
         client = Fed_LGV_client(
