@@ -318,6 +318,14 @@ def gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, random_noise, num_nei
     return ds
 
 
+def gen_crd_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, model_type, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir=None):
+    """
+    Generate dataset for FedCRD.
+    FedCRD requires the dataset to support KNN operations (feature access), similar to FedLGV.
+    """
+    return gen_lgv_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, model_type, assigned_clusters, global_cluster_map, n_clusters, seed, predefined_labels, data_dir)
+
+
 def gen_client_ds(model_type, client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir=None):
     if data_dir is None:
         raise ValueError("data_dir must be provided")

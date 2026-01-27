@@ -8,7 +8,7 @@ import sys
 import pandas as pd
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, Subset
 from torch.utils.tensorboard import SummaryWriter
 from data_processing.preprocessing import vec2one, reduced_name_labels, read_pretrain_feature, relabel_with_pretrained_knn
 from sklearn.neighbors import KNeighborsClassifier
@@ -592,12 +592,41 @@ class Fed_LGV_client(object):
 
         # 读取数据和预训练特征
         reduced_names, reduced_labels = reduced_name_labels(name_path, labels)
-        pre_features = read_pretrain_feature(reduced_names, pre_feature_dir)
+        # pre_features = read_pretrain_feature(reduced_names, pre_feature_dir)
+        
+        # 使用 dataset 本身的特征 (x1, x2) 替代预训练特征
+        print(f"Client {self.client_id}: Extracting features from dataset for KNN...")
+        reduced_features = []
+        name_set = set()
+        
+        # 遍历数据集提取去重后的特征
+        # 注意：这里假设 dataset.names 的顺序与 reduced_name_labels 处理文件的顺序一致
+        for i in range(len(self.dataset)):
+            name = self.dataset.names[i]
+            if name not in name_set:
+                name_set.add(name)
+                
+                # 获取特征 (x1, x2)
+                # dataset[i] 返回 (x1, x2, label, ratio) 或 (x1, x2, label)
+                data_item = self.dataset[i]
+                x1 = data_item[0]
+                x2 = data_item[1]
+                
+                # Flatten 并拼接特征
+                # x1: (1, 100, 300) -> Flatten
+                # x2: (300,) -> Flatten
+                f1 = x1.view(-1).numpy()
+                f2 = x2.view(-1).numpy()
+                feature = np.concatenate([f1, f2])
+                
+                reduced_features.append(feature)
+        
+        reduced_features = np.array(reduced_features)
         
         # 运行 KNN 获取初始概率和一致性
         # - prob_relabels: 本地特征视角下的标签概率。
         # - agreement_ratios: 本地特征视角下的样本一致性。
-        relabels, prob_relabels, agreement_ratios, indices = relabel_with_pretrained_knn(reduced_labels, pre_features, 2, 'uniform', self.args.num_neigh, 0.15)
+        relabels, prob_relabels, agreement_ratios, indices = relabel_with_pretrained_knn(reduced_labels, reduced_features, 2, 'uniform', self.args.num_neigh, 0.15)
         
         # 保存静态特征 KNN 的邻居索引，供后续 Global View 构建使用
         self.reduced_knn_indices = indices
@@ -883,11 +912,31 @@ class Fed_LGV_client(object):
         all_uncertainties = torch.cat(all_uncertainties, dim=0) # (N,)
         
         # 2. 计算动态权重 alpha (公式 3 & 5)
-        # alpha_raw = 1 - u
-        alpha_raw = 1.0 - all_uncertainties
+        # 逻辑修正 (Critical Fix for Systemic Noise):
+        # 原逻辑: alpha = 1.0 - uncertainty 
+        #   -> 意味着模型越确定 (Low Uncertainty)，越信任 Global View。
+        #   -> 在 Systemic Noise 下，模型可能对错误标签非常自信 (Overconfidence)。
+        #   -> 导致强行融合错误的 Global View，破坏 WarmUp 成果。
+        #
+        # 新逻辑: alpha = uncertainty
+        #   -> 意味着模型越迷茫 (High Uncertainty)，才去参考 Global View。
+        #   -> 如果模型很确定 (Low Uncertainty)，则坚持 Local View (WarmUp 结果)，不受 Global 噪声干扰。
+        # 优化: 使用平方衰减 (u^2) 而非线性 (u)。
+        #   -> 进一步降低在"半懂不懂" (u~0.5) 时的干扰，只在极度迷茫 (u>0.8) 时才显著引入 Global View。
+        alpha_raw = all_uncertainties ** 2 # 非线性衰减
         
-        # 截断约束 alpha \in [0.1, 0.7]
-        alpha_min, alpha_max = 0.1, 0.7
+        # 截断约束 alpha \in [alpha_min, alpha_max]
+        # 修改原因：实验发现模型在全阴/全阳之间剧烈震荡，说明全局视图可能引入了过大的噪声或不稳定性。
+        # 降低 alpha_max 以限制全局视图的最大权重，更多地依赖本地的一致性（特别是修复了本地KNN特征后）。
+        # 进一步修改：将 alpha_max 与 server 端的 self.global_weight 绑定，
+        # 使 autotune_gr 的动态调整能够真正影响客户端的融合策略。
+        alpha_min = self.args.alpha_min
+        # alpha_max = 0.5 
+        alpha_max = self.global_weight # 动态绑定到 global_weight
+        
+        # 增加保护：防止 global_weight 越界或过大
+        alpha_max = max(0.0, min(alpha_max, self.args.alpha_max))
+        
         alpha = torch.clamp(alpha_raw, alpha_min, alpha_max)
         
         # 将 alpha 扩展维度以匹配 prob_labels: (N, 1)
@@ -985,6 +1034,229 @@ class Fed_LGV_GKNN_client(Fed_LGV_client):
 
     def get_global_knn_labels(self, vul, noise_type, noise_rate):
         pass
+
+
+class Fed_CRD_client(Fed_Avg_client):
+    def __init__(self, args, criterion, model, dataset, client_id, run_timestamp=None):
+        super().__init__(args, criterion, model, dataset, client_id, run_timestamp)
+        self.reduced_knn_indices = None
+        self.local_probs = None # To store local distribution
+        self.pi_loc = None
+        self.h_loc = None
+        self.reduced_names = None
+        self.reduced_labels = None
+
+    def init_knn_neighborhood(self):
+        """
+        Build static KNN neighborhood using pre-trained features.
+        This follows the logic in Fed_LGV_client to ensure consistency.
+        """
+        vul = getattr(self.args, 'vul', 'unknown_vul')
+        
+        # We need to extract features similar to Fed_LGV_client.get_local_knn_labels
+        # Note: This logic assumes we can access dataset features directly or via file paths
+        
+        # 1. Extract reduced features (deduplicated by name)
+        reduced_features = []
+        name_set = set()
+        
+        # We also need reduced labels for local consistency calculation
+        reduced_labels = []
+        reduced_names = []
+        
+        # Iterate dataset to extract features
+        # Assuming dataset structure is consistent with what Fed_LGV expects
+        print(f"Client {self.client_id}: Initializing KNN neighborhood...")
+        for i in range(len(self.dataset)):
+            name = self.dataset.names[i]
+            if name not in name_set:
+                name_set.add(name)
+                reduced_names.append(name)
+                reduced_labels.append(self.dataset.labels[i])
+                
+                # Extract feature (x1, x2)
+                # Handle different dataset return formats
+                data_item = self.dataset[i]
+                x1 = data_item[0]
+                x2 = data_item[1]
+                
+                f1 = x1.view(-1).numpy()
+                f2 = x2.view(-1).numpy()
+                feature = np.concatenate([f1, f2])
+                reduced_features.append(feature)
+        
+        reduced_features = np.array(reduced_features)
+        
+        # 2. Run KNN to get indices
+        # We reuse relabel_with_pretrained_knn but we are interested in indices
+        # Note: relabel_with_pretrained_knn returns (relabels, prob_relabels, agreement_ratios, indices)
+        # We use a dummy K=2 here, but args.num_neigh is what matters for neighborhood size
+        
+        _, _, _, indices = relabel_with_pretrained_knn(
+            reduced_labels, 
+            reduced_features, 
+            2, # num_classes (dummy)
+            'uniform', 
+            self.args.num_neigh, 
+            0.15 # threshold (dummy)
+        )
+        
+        self.reduced_knn_indices = indices
+        self.reduced_names = reduced_names
+        self.reduced_labels = np.array(reduced_labels)
+        
+        # 3. Pre-calculate Local Distribution (pi_loc) and Local Homogeneity (h_loc)
+        # pi_loc: Distribution of labels in the neighborhood
+        
+        M = len(reduced_names)
+        K = self.args.num_neigh
+        num_classes = 2 # Assuming binary classification
+        
+        # Get neighbor labels: (M, K)
+        neighbor_labels = self.reduced_labels[self.reduced_knn_indices]
+        
+        # Calculate distribution: (M, C)
+        pi_loc = np.zeros((M, num_classes))
+        for i in range(M):
+            for k in range(K):
+                label = int(neighbor_labels[i, k])
+                if 0 <= label < num_classes:
+                    pi_loc[i, label] += 1
+        pi_loc = pi_loc / K
+        
+        self.pi_loc = torch.tensor(pi_loc, dtype=torch.float32, device=self.device)
+        self.h_loc = torch.max(self.pi_loc, dim=1)[0] # (M,)
+        print(f"Client {self.client_id}: KNN neighborhood initialized.")
+
+    def get_consistency_stats(self, global_model):
+        """
+        Compute consistency statistics: pi_glob, h_glob, delta, q_k
+        """
+        if self.reduced_knn_indices is None:
+            self.init_knn_neighborhood()
+            
+        # 1. Compute Global Distribution (pi_glob) using Global Model
+        # We need to run inference on the reduced dataset
+        
+        # Create a mapping from name to index in original dataset
+        name_to_idx = {name: i for i, name in enumerate(self.dataset.names)}
+        indices = [name_to_idx[name] for name in self.reduced_names]
+        
+        # Create Subset
+        reduced_ds = Subset(self.dataset, indices)
+        dl = DataLoader(reduced_ds, batch_size=self.args.batch, shuffle=False)
+        
+        all_probs = []
+        global_model.eval()
+        with torch.no_grad():
+            for batch in dl: 
+                 # Unpack dynamically
+                 if len(batch) == 3:
+                     x1, x2, _ = batch
+                 elif len(batch) >= 4:
+                     x1, x2, _, _ = batch[0:4]
+                     
+                 x1, x2 = x1.to(self.device), x2.to(self.device)
+                 outputs = global_model(x1, x2)
+                 probs = F.softmax(outputs, dim=1)
+                 all_probs.append(probs)
+        
+        # (M, C)
+        all_probs = torch.cat(all_probs, dim=0)
+        
+        # Now compute pi_glob based on neighbors
+        # neighbor_probs: (M, K, C)
+        knn_indices = torch.tensor(self.reduced_knn_indices, dtype=torch.long, device=self.device)
+        neighbor_probs = all_probs[knn_indices]
+        
+        # pi_glob = mean of neighbor probabilities
+        # (M, C)
+        pi_glob = torch.mean(neighbor_probs, dim=1)
+        h_glob = torch.max(pi_glob, dim=1)[0] # (M,)
+        
+        # 2. Compute Discrepancy (delta)
+        # JS Divergence between pi_loc and pi_glob
+        # JS(P||Q) = 0.5 * KL(P||M) + 0.5 * KL(Q||M), M = 0.5*(P+Q)
+        
+        m = 0.5 * (self.pi_loc + pi_glob)
+        kl_loc = F.kl_div(torch.log(self.pi_loc + 1e-8), m, reduction='none').sum(dim=1)
+        kl_glob = F.kl_div(torch.log(pi_glob + 1e-8), m, reduction='none').sum(dim=1)
+        js_div = 0.5 * (kl_loc + kl_glob)
+        
+        # delta = h_loc * h_glob * js_div
+        delta = self.h_loc * h_glob * js_div # (M,)
+        
+        # 3. Client-level Ambiguity (d_tilde)
+        # Average over all samples
+        d_tilde = torch.mean(delta).item()
+        
+        # 4. Reliability (q_k)
+        q_loc = torch.mean(self.h_loc).item()
+        q_glob = torch.mean(h_glob).item()
+        
+        lambda_val = getattr(self.args, 'lambda_crd', 2.0) # Hyperparameter, default 2.0
+        
+        q_k = min(q_loc, q_glob) * np.exp(-lambda_val * d_tilde)
+        
+        return q_k, len(self.dataset)
+
+    def train(self):
+        """
+        Custom train loop for Fed_CRD to handle dataset unpacking correctly.
+        FedCRD datasets (reused from LGV) might return extra values (agr, index), 
+        but we only need x1, x2, y for standard CrossEntropy training.
+        """
+        dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True)
+        if self.args.model_type == "CBGRU":
+            lr = self.args.cbgru_local_lr
+        elif self.args.model_type == "CGE":
+            lr = self.args.cge_local_lr
+        
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=self.args.weight_decay)
+
+        self.result = dict()
+        device = self.args.device
+        self.result['sample'] = len(self.dataset)
+
+        self.model.train()
+        for epoch in range(self.args.cbgru_local_epoch):
+            self.result['loss'] = 0
+            for batch in dataloader:
+                # Dynamically unpack based on length
+                if len(batch) == 3:
+                    x1, x2, y = batch
+                elif len(batch) >= 4:
+                    x1, x2, y = batch[0], batch[1], batch[2]
+                
+                optimizer.zero_grad()
+                x1, x2, y = x1.to(device), x2.to(device), y.to(device)
+                
+                outputs = self.model(x1, x2)
+                y = y.flatten().long()
+                
+                loss = self.criterion(outputs, y)
+                self.result['loss'] = self.result['loss'] + loss.item()
+                loss.backward()
+                
+                # Gradient Clipping
+                clip_value = 1.0 if getattr(self.args, 'vul', '') == 'timestamp' else 10
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_value)
+                
+                optimizer.step()
+
+                del x1, x2, y, outputs, loss
+                torch.cuda.empty_cache()
+                gc.collect()
+            
+            # Record Average Loss
+            avg_loss = self.result['loss'] / len(dataloader)
+            self.tb_writer.add_scalar("loss/train", avg_loss, self.tb_global_step)
+            
+            # Log loss to text file
+            with open(self.log_file_path, "a") as f:
+                f.write(f"{self.tb_global_step},{epoch},{avg_loss}\n")
+                
+            self.tb_global_step += 1
 
 
 class Fed_CLC_client(object):

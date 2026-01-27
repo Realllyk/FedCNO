@@ -335,5 +335,48 @@ def parse_args():
         help='directory of data'
     )
 
+    parser.add_argument(
+        '--alpha_min',
+        type=float,
+        default=0.05,
+        help='Minimum value for alpha in Fed_LGV client'
+    )
+
+    parser.add_argument(
+        '--alpha_max',
+        type=float,
+        default=0.8,
+        help='Maximum value for alpha in Fed_LGV client'
+    )
+
+    # FedCRD Arguments
+    parser.add_argument(
+        '--lambda_crd',
+        type=float,
+        default=2.0,
+        help='Penalty strength for consistency discrepancy in FedCRD'
+    )
+
+    parser.add_argument(
+        '--alpha_crd',
+        type=float,
+        default=0.5,
+        help='Weight for training process signal in FedCRD reliability correction'
+    )
+
+    parser.add_argument(
+        '--C_min',
+        type=float,
+        default=0.5,
+        help='Minimum clipping threshold factor in FedCRD'
+    )
+
+    parser.add_argument(
+        '--C_max',
+        type=float,
+        default=2.0,
+        help='Maximum clipping threshold factor in FedCRD'
+    )
+
     args = parser.parse_args()
     return args

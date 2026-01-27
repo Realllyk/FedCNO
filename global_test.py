@@ -7,7 +7,7 @@ from pathlib import Path
 from sklearn.metrics import confusion_matrix
 
 
-def global_test(model, dataloader, criterion, args, method, reduction='mean', run_timestamp=None):
+def global_test(model, dataloader, criterion, args, method, reduction='mean', run_timestamp=None, save_result=True, tag='test', epoch=None):
     all_predictions = []
     all_targets = []
     total_loss = 0
@@ -30,10 +30,14 @@ def global_test(model, dataloader, criterion, args, method, reduction='mean', ru
             torch.cuda.empty_cache()
     
     avg_loss = total_loss / len(dataloader)
-    print(f"Averge Loss: {avg_loss}")
+    print(f"[{tag.upper()}] Averge Loss: {avg_loss}")
     tn, fp, fn, tp = confusion_matrix(all_targets, all_predictions).ravel()
     result_dict = dict()
     
+    result_dict['tag'] = tag
+    if epoch is not None:
+        result_dict['epoch'] = epoch
+
     # Add timestamp to result_dict if provided
     if run_timestamp:
         result_dict['time'] = run_timestamp
@@ -48,6 +52,16 @@ def global_test(model, dataloader, criterion, args, method, reduction='mean', ru
     result_dict['Precision'] = tp / (tp + fp)
     result_dict['F1 score'] = (2 * result_dict['Precision'] * result_dict['Recall(TPR)']) / (result_dict['Precision'] + result_dict['Recall(TPR)'])\
     
+    print(f"[{tag.upper()}] Accuracy: ", result_dict['Accuracy'])
+    print(f"[{tag.upper()}] False positive rate(FPR): ", result_dict['False positive rate(FPR)'])
+    print(f"[{tag.upper()}] False negative rate(FNR): ", result_dict['False negative rate(FNR)'])
+    print(f"[{tag.upper()}] Recall(TPR): ", result_dict['Recall(TPR)'])
+    print(f"[{tag.upper()}] Precision: ", result_dict['Precision'])
+    print(f"[{tag.upper()}] F1 score: ", result_dict['F1 score'])
+    
+    if not save_result:
+        return
+
     # result_path = Path(os.path.realpath(__file__)).parents[0].joinpath(
     #     'merge_result',
     #     str(args.noise_rate),
@@ -102,8 +116,9 @@ def global_test(model, dataloader, criterion, args, method, reduction='mean', ru
         file_name = f'diff_{file_name}'
     elif args.noise_type == 'sys_noise':
         file_name = f'sys_{file_name}'
-    # For 'pure' or 'non_noise', the prefix was empty or handled by 'pure' folder logic previously.
-    # Now 'pure' is just another noise_type folder.
+    
+    if tag == 'valid':
+        file_name = file_name.replace('.json', '_valid.json')
     
     result_file_path = result_path.joinpath(file_name)
         
@@ -120,13 +135,6 @@ def global_test(model, dataloader, criterion, args, method, reduction='mean', ru
         file = open(str(result_file_path), "w")
         json.dump(data, file, ensure_ascii=False, indent=4)
         file.close()
-
-    print("Accuracy: ", result_dict['Accuracy'])
-    print('False positive rate(FPR): ', result_dict['False positive rate(FPR)'])
-    print('False negative rate(FNR): ', result_dict['False negative rate(FNR)'])
-    print('Recall(TPR): ', result_dict['Recall(TPR)'])
-    print('Precision: ', result_dict['Precision'])
-    print('F1 score: ', result_dict['F1 score'])
             
             
 

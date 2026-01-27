@@ -157,6 +157,11 @@ if __name__ == '__main__':
         run_timestamp=run_timestamp
     )
 
+    # test_dl 是真正的测试集 (Test Set)
+    test_dl = gen_test_dl(args.model_type, args.vul, data_dir=args.data_dir)
+    # valid_dl 是验证集 (Validation Set)，用于辅助调参或早停（目前代码中未使用，预留）
+    valid_dl = gen_valid_dl(args.model_type, args.vul, data_dir=args.data_dir)
+
     #  Warm up
     # -------------------------------------------------------------------------
     # 阶段 1: 热身训练 (Warm-up Phase)
@@ -188,6 +193,24 @@ if __name__ == '__main__':
 
         # 聚合参数 (FedAvg Aggregation)
         server.average_weights()
+
+    # WarmUp 阶段结束后的测试
+    print("\n--- WarmUp Phase Finished. Testing with Fed_Avg lab_name ---")
+    original_lab_name = args.lab_name
+    args.lab_name = 'Fed_Avg'
+    global_test(
+        server.global_model, 
+        test_dl, 
+        criterion, 
+        args, 
+        f"WarmUp_FedAvg", 
+        reduction='mean', 
+        run_timestamp=run_timestamp, 
+        save_result=True,
+        tag='test'
+    )
+    args.lab_name = original_lab_name
+    print("-----------------------------------------------------------\n")
     
     # initialize dataset
     # 重新初始化数据集，为正式的 Fed_LGV 训练做准备
@@ -227,11 +250,7 @@ if __name__ == '__main__':
         )
         train_ds.append(ds)
     print(args.random_noise)
-    # test_dl 是真正的测试集 (Test Set)
-    test_dl = gen_test_dl(args.model_type, args.vul, data_dir=args.data_dir)
-    # valid_dl 是验证集 (Validation Set)，用于辅助调参或早停（目前代码中未使用，预留）
-    valid_dl = gen_valid_dl(args.model_type, args.vul, data_dir=args.data_dir)
-
+    
     # initialize Client
     # -------------------------------------------------------------------------
     # 初始化 LGV 客户端
@@ -297,6 +316,22 @@ if __name__ == '__main__':
         if epoch % 5 == 0:
             # 使用验证集 (valid_dl) 而不是测试集来调整全局权重
             server.autotune_gr(valid_dl)
+            
+            # 验证集评估
+            print(f"\n--- Validation at Epoch {epoch} ---")
+            global_test(
+                server.global_model, 
+                valid_dl, 
+                criterion, 
+                args, 
+                f"{args.num_neigh}neigh_{args.global_weight}_{args.lab_name}", 
+                reduction=reduction,
+                run_timestamp=run_timestamp,
+                save_result=True,
+                tag='valid',
+                epoch=epoch
+            )
+            print("-------------------------------\n")
     
     global_test(server.global_model, test_dl, criterion, args, f"{args.num_neigh}neigh_{args.global_weight}_{args.lab_name}", run_timestamp=run_timestamp)
         

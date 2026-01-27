@@ -239,10 +239,25 @@ class LGV_server(Server):
             f.write(f"{current_time},{avg_loss},{current_f1}\n")
         
         if self.previous_f1 != None:
+            # 逻辑修正：
+            # 如果 F1 上升 (current > previous)，说明当前方向正确或模型变强，
+            # 我们应该保持信心，或者适度增加 global_weight 以利用更强的全局模型（前提是没到上限）。
+            # 如果 F1 下降 (current < previous)，说明全局模型可能引入了噪声，或者权重过大，
+            # 应该降低 global_weight 以回退到更安全的本地视图。
+            
             if current_f1 > self.previous_f1:
-                self.global_weight -= self.args.adjustment_factor
-            elif current_f1 < self.previous_f1:
+                # 性能提升，尝试稍微增加权重（奖励），利用更好的全局模型
+                # 但不要加太快，防止震荡
                 self.global_weight += self.args.adjustment_factor
+            elif current_f1 < self.previous_f1:
+                # 性能下降，降低权重（惩罚），减少全局噪声影响
+                self.global_weight -= self.args.adjustment_factor
+                
+            # 边界约束：防止权重过小或过大
+            self.global_weight = max(0.1, min(self.global_weight, 0.75))
+            
+            print(f"Auto-tuning: F1 {self.previous_f1:.4f} -> {current_f1:.4f}, New Global Weight: {self.global_weight:.4f}")
+            
         self.previous_f1 = current_f1
 
 class CLC_Server(Server):
@@ -280,4 +295,109 @@ class CLC_Server(Server):
                     for j in range(self.args.client_num):
                         conf_score[i] += conf_wt[i][j] * self.conflist_each[j][i]
         return conf_score
+
+
+class CRD_server(Server):
+    def __init__(
+        self,
+        args,
+        model,
+        device,
+        criterion
+    ):
+        super().__init__(args, model, device, criterion)
+        # CRD specific params
+        self.lambda_crd = getattr(args, 'lambda_crd', 2.0)
+        self.alpha_crd = getattr(args, 'alpha_crd', 0.5)
+        self.C_min = getattr(args, 'C_min', 0.5)
+        self.C_max = getattr(args, 'C_max', 2.0)
+
+    def aggregate(self, updates_list):
+        """
+        updates_list: list of (client_id, delta_state_dict, q_k, n_k)
+        """
+        if not updates_list:
+            return
+            
+        # 1. Compute Reference Update (delta_bar)
+        num_clients = len(updates_list)
+        
+        # Initialize delta_bar with zeros
+        first_delta = updates_list[0][1]
+        delta_bar = {k: torch.zeros_like(v).float() for k, v in first_delta.items()}
+        
+        for _, delta, _, _ in updates_list:
+            for k, v in delta.items():
+                delta_bar[k] += v.float()
+                
+        for k in delta_bar.keys():
+            delta_bar[k] /= num_clients
+            
+        # Flatten delta_bar for cosine similarity calculation
+        def flatten(state_dict):
+            return torch.cat([v.flatten().float() for v in state_dict.values()])
+            
+        delta_bar_vec = flatten(delta_bar).to(self.device)
+        norm_delta_bar = torch.norm(delta_bar_vec) + 1e-8
+        
+        # 2. Process each client
+        processed_updates = [] # list of (hat_delta, omega)
+        total_weight = 0.0
+        
+        for client_id, delta, q_k, n_k in updates_list:
+            delta_vec = flatten(delta).to(self.device)
+            norm_delta = torch.norm(delta_vec) + 1e-8
+            
+            # Direction Consistency (s_k)
+            cos_sim = torch.dot(delta_vec, delta_bar_vec) / (norm_delta * norm_delta_bar)
+            s_k = cos_sim.item()
+            
+            # Magnitude Consistency (m_k)
+            ratio = norm_delta / norm_delta_bar
+            m_k = torch.exp(-torch.abs(torch.log(ratio))).item()
+            
+            # Training Process Signal (r_k)
+            r_k = s_k * m_k
+            
+            # Corrected Reliability (q_tilde)
+            q_tilde = q_k + self.alpha_crd * r_k
+            q_tilde = max(0.0, min(1.0, q_tilde)) # clip to [0, 1]
+            
+            # Adaptive Clipping Threshold (C_k)
+            C_k = self.C_min + (self.C_max - self.C_min) * q_tilde
+            
+            # Perform Clipping (hat_delta)
+            scaling_factor = min(1.0, C_k / (norm_delta.item() + 1e-8))
+            
+            hat_delta = {k: v * scaling_factor for k, v in delta.items()}
+            
+            # Aggregation Weight (omega_k)
+            omega_k = n_k * q_tilde
+            
+            processed_updates.append((hat_delta, omega_k))
+            total_weight += omega_k
+            
+        # 3. Aggregate
+        if total_weight == 0:
+            print("Total weight is 0, skipping update")
+            return
+            
+        # Initialize global update with zeros
+        global_update = {k: torch.zeros_like(v).float() for k, v in first_delta.items()}
+        
+        for hat_delta, omega in processed_updates:
+            normalized_weight = omega / total_weight
+            for k, v in hat_delta.items():
+                global_update[k] += v.to(self.device) * normalized_weight
+                
+        # Apply update to global model
+        current_params = self.global_model.state_dict()
+        new_params = copy.deepcopy(current_params)
+        
+        for k in new_params.keys():
+            if k in global_update:
+                new_params[k] = current_params[k].float() + global_update[k].float()
+                
+        self.global_model.load_state_dict(new_params)
+        print(f"Aggregated {len(processed_updates)} updates with total weight {total_weight:.4f}")
     
