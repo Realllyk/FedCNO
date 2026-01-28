@@ -21,18 +21,19 @@ import time
 import concurrent.futures
 
 
-def train_crd_client(client_id, client, global_model, criterion):
+def train_crd_client(client_id, client, global_model, ema_model, criterion):
     """
     Train one client for FedCRD
     """
-    # 1. Update local model with global parameters
+    # 1. Update local model with global parameters (for training)
     # Important: Deepcopy to ensure independent training
     client.model = copy.deepcopy(global_model)
     
-    # Keep a copy of global model for consistency calculation (theta^t)
-    global_model_copy = copy.deepcopy(global_model)
-    global_model_copy.eval()
-    for param in global_model_copy.parameters():
+    # Keep a copy of EMA model for consistency calculation (theta_ema^t)
+    # This provides a more stable anchor than the current global model
+    ema_model_copy = copy.deepcopy(ema_model)
+    ema_model_copy.eval()
+    for param in ema_model_copy.parameters():
         param.requires_grad = False
         
     # 2. Local Training
@@ -41,21 +42,23 @@ def train_crd_client(client_id, client, global_model, criterion):
     
     # 3. Compute Update Delta and Reliability
     local_params = client.get_parameters()
-    global_params = global_model_copy.state_dict()
+    # Delta is still computed against the *current* global model (what we started with)
+    # because we want to know the update direction relative to theta^t
+    global_params = global_model.state_dict()
     
     # Calculate delta = theta_k^t - theta^t
     delta = {}
     for k in local_params.keys():
         delta[k] = local_params[k] - global_params[k]
         
-    # Calculate Reliability q_k^t using theta^t (global_model_copy)
-    q_k, num_samples = client.get_consistency_stats(global_model_copy)
+    # Calculate Reliability q_k^t using EMA model
+    q_k, num_samples = client.get_consistency_stats(ema_model_copy)
     
     result = client.result
     loss = result.get('loss', 0.0)
     
     # Clean up
-    del global_model_copy
+    del ema_model_copy
     torch.cuda.empty_cache()
     gc.collect()
     
@@ -168,7 +171,7 @@ if __name__ == '__main__':
         futures = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             for client_id in range(args.client_num):
-                futures.append(executor.submit(train_crd_client, client_id, clients[client_id], server.global_model, criterion))
+                futures.append(executor.submit(train_crd_client, client_id, clients[client_id], server.global_model, server.ema_model, criterion))
             
             for future in futures:
                 client_id, delta, q_k, num_samples, result, loss = future.result()

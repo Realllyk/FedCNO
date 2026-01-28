@@ -74,7 +74,12 @@ if __name__ == '__main__':
         # DEBUG: Check if noise is applied
         if args.noise_type != 'non_noise':
             import pandas as pd
-            client_dir = os.path.join(args.data_dir, f"graduate_client_split/{args.vul}/client_{i}/")
+            if args.model_type == 'CBGRU':
+                client_dir = os.path.join(args.data_dir, f"graduate_client_split/cbgru/{args.vul}/client_{i}/")
+            elif args.model_type == 'CGE':
+                client_dir = os.path.join(args.data_dir, f"graduate_client_split/cge/{args.vul}/client_{i}/")
+            else:
+                client_dir = os.path.join(args.data_dir, f"graduate_client_split/{args.vul}/client_{i}/")
             labels_path = os.path.join(client_dir, f"label_train.csv")
             if os.path.exists(labels_path):
                 clean_labels = pd.read_csv(labels_path, header=None).iloc[:, 0].values

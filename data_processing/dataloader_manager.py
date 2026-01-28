@@ -269,8 +269,9 @@ def gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, random_noise, num_n
     fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
     # client_dir = f"./data/client_split/{vul}/client_{client_id}/"
     # names_path = os.path.join(client_dir, "cbgru_contract_name_train.txt")
-    # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
-    client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{client_id}/")
+    
+    client_dir = os.path.join(data_dir, f"graduate_client_split/cbgru/{vul}/client_{client_id}/")
+    
     names_path = os.path.join(client_dir, "contract_name_train.txt")
     labels_path = os.path.join(client_dir, f"label_train.csv")
     ds = CustomerDataset(word2vec_dir, fastText_dir, labels_path, names_path)
@@ -298,7 +299,7 @@ def gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, random_noise, num_nei
     graph_dir = os.path.join(data_dir, f'cge_data/{vul}/graph_feature')
     pattern_dir = os.path.join(data_dir, f'cge_data/{vul}/pattern_feature')
     # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
-    client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{client_id}/")
+    client_dir = os.path.join(data_dir, f"graduate_client_split/cge/{vul}/client_{client_id}/")
     names_path = os.path.join(client_dir, "contract_name_train.txt")
     labels_path = os.path.join(client_dir, f"label_train.csv")
     ds = LgvCgeDataset(graph_dir, pattern_dir, labels_path, names_path)
@@ -349,7 +350,7 @@ def gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, random_noise, nu
     #     labels_path = os.path.join(client_dir, f"{noise_type}_label_train_{noise_rate*100:03.0f}.csv")
     # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
     # client_dir = f"./data/graduate_client_split/{vul}/cbgru/client_{client_id}/"
-    client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{client_id}/")
+    client_dir = os.path.join(data_dir, f"graduate_client_split/cbgru/{vul}/client_{client_id}/")
     names_path = os.path.join(client_dir, "contract_name_train.txt")
     labels_path = os.path.join(client_dir, f"label_train.csv")
     
@@ -374,8 +375,8 @@ def gen_cbgru_test_ds(vul, data_dir=None):
     fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
     # names_path = f'./data/4_client_split/{vul}/contract_name_test.txt'
     # labels_path = f'./data/4_client_split/{vul}/label_test.csv'
-    names_path = os.path.join(data_dir, f"graduate_client_split/{vul}/contract_name_test.txt")
-    labels_path = os.path.join(data_dir, f"graduate_client_split/{vul}/label_test.csv")
+    names_path = os.path.join(data_dir, f"graduate_client_split/cbgru/{vul}/contract_name_test.txt")
+    labels_path = os.path.join(data_dir, f"graduate_client_split/cbgru/{vul}/label_test.csv")
     ds = CbgruDataset(word2vec_dir, fastText_dir, labels_path, names_path)
     return ds
 
@@ -387,8 +388,8 @@ def gen_cge_test_ds(vul, data_dir=None):
     pattern_dir = os.path.join(data_dir, f'cge_data/{vul}/pattern_feature')
     # names_path = f'./data/4_client_split/{vul}/contract_name_test.txt'
     # labels_path = f'./data/4_client_split/{vul}/label_test.csv'
-    names_path = os.path.join(data_dir, f"graduate_client_split/{vul}/contract_name_test.txt")
-    labels_path = os.path.join(data_dir, f"graduate_client_split/{vul}/label_test.csv")
+    names_path = os.path.join(data_dir, f"graduate_client_split/cge/{vul}/contract_name_test.txt")
+    labels_path = os.path.join(data_dir, f"graduate_client_split/cge/{vul}/label_test.csv")
     ds = CgeDataset(graph_dir, pattern_dir, labels_path, names_path)
     return ds
 
@@ -409,7 +410,7 @@ def gen_cge_client_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigne
     graph_dir = os.path.join(data_dir, f'cge_data/{vul}/graph_feature')
     pattern_dir = os.path.join(data_dir, f'cge_data/{vul}/pattern_feature')
     # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
-    client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{client_id}/")
+    client_dir = os.path.join(data_dir, f"graduate_client_split/cge/{vul}/client_{client_id}/")
     names_path = os.path.join(client_dir, "contract_name_train.txt")
     labels_path = os.path.join(client_dir, f"label_train.csv")
     ds = CgeDataset(graph_dir, pattern_dir, labels_path, names_path)
@@ -432,14 +433,14 @@ def gen_valid_ds(model_type, vul, data_dir=None):
     if model_type == "CBGRU":
         word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
         fastText_dir = os.path.join(data_dir, f"cbgru_data/{vul}/FastText")
-        names_path = os.path.join(data_dir, f"graduate_client_split/{vul}/contract_name_valid.txt")
-        labels_path = os.path.join(data_dir, f"graduate_client_split/{vul}/label_valid.csv")
+        names_path = os.path.join(data_dir, f"graduate_client_split/cbgru/{vul}/contract_name_valid.txt")
+        labels_path = os.path.join(data_dir, f"graduate_client_split/cbgru/{vul}/label_valid.csv")
         ds = CbgruDataset(word2vec_dir, fastText_dir, labels_path, names_path)
     elif model_type == "CGE":
         graph_dir = os.path.join(data_dir, f'cge_data/{vul}/graph_feature')
         pattern_dir = os.path.join(data_dir, f'cge_data/{vul}/pattern_feature')
-        names_path = os.path.join(data_dir, f"graduate_client_split/{vul}/contract_name_valid.txt")
-        labels_path = os.path.join(data_dir, f"graduate_client_split/{vul}/label_valid.csv")
+        names_path = os.path.join(data_dir, f"graduate_client_split/cge/{vul}/contract_name_valid.txt")
+        labels_path = os.path.join(data_dir, f"graduate_client_split/cge/{vul}/label_valid.csv")
         ds = CgeDataset(graph_dir, pattern_dir, labels_path, names_path)
     return ds
 

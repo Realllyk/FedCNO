@@ -378,5 +378,12 @@ def parse_args():
         help='Maximum clipping threshold factor in FedCRD'
     )
 
+    parser.add_argument(
+        '--ema_beta',
+        type=float,
+        default=0.9,
+        help='Momentum coefficient for EMA model in FedCRD'
+    )
+
     args = parser.parse_args()
     return args

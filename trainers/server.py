@@ -311,6 +311,21 @@ class CRD_server(Server):
         self.alpha_crd = getattr(args, 'alpha_crd', 0.5)
         self.C_min = getattr(args, 'C_min', 0.5)
         self.C_max = getattr(args, 'C_max', 2.0)
+        
+        # EMA Model Init
+        self.ema_beta = getattr(args, 'ema_beta', 0.9)
+        self.ema_model = copy.deepcopy(model)
+        for param in self.ema_model.parameters():
+            param.requires_grad = False
+
+    def update_ema_model(self):
+        """
+        Update EMA model: theta_ema = beta * theta_ema + (1-beta) * theta
+        """
+        beta = self.ema_beta
+        with torch.no_grad():
+            for param_ema, param_global in zip(self.ema_model.parameters(), self.global_model.parameters()):
+                param_ema.data.mul_(beta).add_(param_global.data, alpha=1 - beta)
 
     def aggregate(self, updates_list):
         """
@@ -400,4 +415,7 @@ class CRD_server(Server):
                 
         self.global_model.load_state_dict(new_params)
         print(f"Aggregated {len(processed_updates)} updates with total weight {total_weight:.4f}")
+        
+        # Update EMA model after aggregation
+        self.update_ema_model()
     
