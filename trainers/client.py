@@ -586,8 +586,15 @@ class Fed_LGV_client(object):
         # 来建立初始的标签概率分布和一致性基准。
         
         pre_feature_dir = os.path.join(self.args.data_dir, f"pretrain_feature/{vul}")
-        # name_path = os.path.join(self.args.data_dir, f"client_split/{vul}/client_{self.client_id}/cbgru_contract_name_train.txt")
-        name_path = os.path.join(self.args.data_dir, f"graduate_client_split/{vul}/client_{self.client_id}/contract_name_train.txt")
+        
+        # 根据 model_type 选择路径，确保与数据集加载路径一致
+        if self.args.model_type == 'CBGRU':
+            name_path = os.path.join(self.args.data_dir, f"graduate_client_split/cbgru/{vul}/client_{self.client_id}/contract_name_train.txt")
+        elif self.args.model_type == 'CGE':
+            name_path = os.path.join(self.args.data_dir, f"graduate_client_split/cge/{vul}/client_{self.client_id}/contract_name_train.txt")
+        else:
+            name_path = os.path.join(self.args.data_dir, f"graduate_client_split/{vul}/client_{self.client_id}/contract_name_train.txt")
+            
         labels = self.dataset.labels
 
         # 读取数据和预训练特征
@@ -672,9 +679,14 @@ class Fed_LGV_client(object):
     # 使用全局模型标签来进行投票
     def get_global_knn_labels(self, vul, noise_type, noise_rate):
         pre_feature_dir = os.path.join(self.args.data_dir, f"pretrain_feature/{vul}")
-        # name_path = os.path.join(self.args.data_dir, f"client_split/{vul}/client_{self.client_id}/cbgru_contract_name_train.txt")
-        # name_path = os.path.join(self.args.data_dir, f"4_client_split/{vul}/client_{self.client_id}/contract_name_train.txt")
-        name_path = f"./data/graduate_client_split/{vul}/client_{self.client_id}/contract_name_train.txt"
+        
+        # 根据 model_type 选择路径，确保与数据集加载路径一致
+        if self.args.model_type == 'CBGRU':
+            name_path = os.path.join(self.args.data_dir, f"graduate_client_split/cbgru/{vul}/client_{self.client_id}/contract_name_train.txt")
+        elif self.args.model_type == 'CGE':
+            name_path = os.path.join(self.args.data_dir, f"graduate_client_split/cge/{vul}/client_{self.client_id}/contract_name_train.txt")
+        else:
+            name_path = os.path.join(self.args.data_dir, f"graduate_client_split/{vul}/client_{self.client_id}/contract_name_train.txt")
 
         # Before local training, new local model is global model
         dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False)
