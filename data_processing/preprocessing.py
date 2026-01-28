@@ -482,16 +482,26 @@ def gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_
         # 在目标簇范围内寻找所有未被选中的样本
         # (限制在 assigned_cluster_indices 内，如果没有指定则全量)
         available_indices = []
+        
         if assigned_cluster_indices is not None:
-            # 只从分配的簇中找
+            # 1. 尝试从分配的簇中找
             valid_clusters = set([c % n_clusters for c in assigned_cluster_indices])
             for idx, c_id in enumerate(cluster_ids):
                 if c_id in valid_clusters and idx not in chosen_indices:
                     available_indices.append(idx)
+            
+            # 2. 如果不够，解除簇限制 (Global Fallback)
+            if len(available_indices) < (m_target - current_count):
+                print(f"  [Info] 分配簇内样本不足 (可用: {len(available_indices)}). 解除簇限制，在全局搜索...")
+                available_indices = []
+                for idx in range(n):
+                    if idx not in chosen_indices:
+                        available_indices.append(idx)
         else:
             # 全局找
-            all_indices = np.arange(n)
-            available_indices = [idx for idx in all_indices if idx not in chosen_indices]
+            for idx in range(n):
+                if idx not in chosen_indices:
+                    available_indices.append(idx)
             
         shortage = m_target - current_count
         if len(available_indices) < shortage:
