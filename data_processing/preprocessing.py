@@ -229,7 +229,7 @@ def compute_global_clusters(all_name_paths, pre_feature_dir, n_clusters=20, seed
     return cluster_map
 
 
-def coordinate_sys_noise_clusters(client_num, vul, noise_type, n_clusters=20, seed=42, data_dir='./data/'):
+def coordinate_sys_noise_clusters(client_num, vul, noise_type, model_type='CBGRU', n_clusters=20, seed=42, data_dir='./data/'):
     """
     协调系统性噪声的簇分配。
     1. 执行全局聚类。
@@ -249,7 +249,13 @@ def coordinate_sys_noise_clusters(client_num, vul, noise_type, n_clusters=20, se
     for i in range(client_num):
         # 假设路径结构如下 (需根据实际情况调整，保持与 Fed_LGV.py 一致):
         # client_dir = f"./data/graduate_client_split/{vul}/client_{client_id}/"
-        client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{i}/")
+        if model_type == "CBGRU":
+            client_dir = os.path.join(data_dir, f"graduate_client_split/cbgru/{vul}/client_{i}/")
+        elif model_type == "CGE":
+            client_dir = os.path.join(data_dir, f"graduate_client_split/cge/{vul}/client_{i}/")
+        else:
+            client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{i}/")
+            
         names_path = os.path.join(client_dir, "contract_name_train.txt")
         all_name_paths.append(names_path)
         

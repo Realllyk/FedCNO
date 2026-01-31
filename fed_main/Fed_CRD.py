@@ -90,6 +90,7 @@ if __name__ == '__main__':
         args.client_num, 
         args.vul, 
         args.noise_type, 
+        model_type=args.model_type,
         n_clusters=args.n_clusters, 
         seed=int(args.seed),
         data_dir=args.data_dir

@@ -109,15 +109,15 @@ def gen_cbgru_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh=
     all_labels = []
     # names_path = f"./data/4_client_split/{vul}/client_0/contract_name_train.txt"
     # labels_path = f"./data/4_client_split/{vul}/client_0/label_train.csv"
-    names_path = os.path.join(data_dir, f"graduate_client_split/{vul}/client_0/contract_name_train.txt")
-    labels_path = os.path.join(data_dir, f"graduate_client_split/{vul}/client_0/label_train.csv")
+    names_path = os.path.join(data_dir, f"graduate_client_split/cbgru/{vul}/client_0/contract_name_train.txt")
+    labels_path = os.path.join(data_dir, f"graduate_client_split/cbgru/{vul}/client_0/label_train.csv")
     ds = CBGruDataset(word2vec_dir, fastText_dir, labels_path, names_path)
     data_indices = []
     offset = 0
     
     for client_id in range(client_num):
         # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
-        client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{client_id}/")
+        client_dir = os.path.join(data_dir, f"graduate_client_split/cbgru/{vul}/client_{client_id}/")
         names_path = os.path.join(client_dir, "contract_name_train.txt")
         labels_path = os.path.join(client_dir, f"label_train.csv")
         names = []
@@ -158,15 +158,15 @@ def gen_cge_whole_dataset(client_num, vul, noise_type, noise_rate, num_neigh=0, 
     all_labels = []
     # names_path = f"./data/4_client_split/{vul}/client_0/contract_name_train.txt"
     # labels_path = f"./data/4_client_split/{vul}/client_0/label_train.csv"
-    names_path = os.path.join(data_dir, f"graduate_client_split/{vul}/client_0/contract_name_train.txt")
-    labels_path = os.path.join(data_dir, f"graduate_client_split/{vul}/client_0/label_train.csv")
+    names_path = os.path.join(data_dir, f"graduate_client_split/cge/{vul}/client_0/contract_name_train.txt")
+    labels_path = os.path.join(data_dir, f"graduate_client_split/cge/{vul}/client_0/label_train.csv")
     ds = CgeDataset(graph_dir, pattern_dir, labels_path, names_path)
     data_indices = []
     offset = 0
     
     for client_id in range(client_num):
         # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
-        client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{client_id}/")
+        client_dir = os.path.join(data_dir, f"graduate_client_split/cge/{vul}/client_{client_id}/")
         names_path = os.path.join(client_dir, "contract_name_train.txt")
         labels_path = os.path.join(client_dir, f"label_train.csv")
         names = []
