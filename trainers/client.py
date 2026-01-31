@@ -1441,7 +1441,7 @@ class Fed_CLC_client(object):
         return sfm_Mat
 
     def data_correct(self):
-        self.avai_dataset.labels = self.sudo_labels
+        self.avai_dataset.labels = np.array(self.sudo_labels)[self.reserve]
         self.data_loader = DataLoader(self.avai_dataset, batch_size=self.args.batch, shuffle=True)
 
 

@@ -137,7 +137,7 @@ if __name__ == '__main__':
         server.update_alpha()
     
     # test_dl = gen_cbgru_valid_dl(args.vul, 0, args.batch)
-    test_dl = gen_valid_dl(args.model_type, args.vul)
+    test_dl = gen_valid_dl(args.model_type, args.vul, args.data_dir)
     global_test(server.global_model, test_dl, criterion, args, args.lab_name)
 
 
