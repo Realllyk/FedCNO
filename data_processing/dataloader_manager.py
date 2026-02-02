@@ -40,7 +40,7 @@ def gen_cbgru_dl(client_id, vul, noise_type, noise_rate, batch = 16, shuffle=Tru
         labels_path = os.path.join(client_dir, "non_noise_label_train_000.csv")
         noise_labels = gen_noise_labels(names_path, labels_path, noise_type, noise_rate)
         ds.labels = noise_labels
-    dl = DataLoader(ds, batch_size=batch,shuffle=shuffle)
+    dl = DataLoader(ds, batch_size=batch, shuffle=shuffle, pin_memory=True)
     
     return dl, 100, 300
 
@@ -63,7 +63,7 @@ def gen_cbgru_client_valid_dl(client_id, vul, batch, noise_labels, frac, data_di
     sub_size = int(n * frac)
     indices = np.random.permutation(n)[:sub_size]
     sub_ds = Subset(ds, indices)
-    dl = DataLoader(sub_ds, batch_size=batch,shuffle=False)
+    dl = DataLoader(sub_ds, batch_size=batch, shuffle=False, pin_memory=True)
      
     return dl
 
@@ -86,7 +86,7 @@ def gen_cbgru_valid_dl(vul, id=0, batch=16, data_dir=None):
     y = y.flatten().long()
 
     ds = TensorDataset(x1, x2, y)
-    dl = DataLoader(ds,batch_size=batch)
+    dl = DataLoader(ds, batch_size=batch, pin_memory=True)
     
     return dl
 
@@ -246,7 +246,7 @@ def gen_knn_dl(client_id, vul, noise_type, noise_rate, batch, num_neigh):
     y = y.flatten().long()
 
     ds = TensorDataset(x1, x2, y)
-    dl = DataLoader(ds, batch, shuffle=True)
+    dl = DataLoader(ds, batch, shuffle=True, pin_memory=True)
     return dl, input_size, time_steps
     
 
@@ -400,7 +400,7 @@ def gen_test_dl(model_type, vul, data_dir=None):
     elif model_type == "CGE":
         ds = gen_cge_test_ds(vul, data_dir=data_dir)
 
-    dl = DataLoader(ds)
+    dl = DataLoader(ds, pin_memory=True)
     return dl
 
 
@@ -476,6 +476,6 @@ def gen_cbgru_client_noise_dl(client_id, vul, noise_type, global_labels, noise_r
 
     ds = NoiseDataset(word2vec_dir, fastText_dir, labels_path, names_path, global_labels)
     ds.labels = torch.tensor(np.array(noise_labels))
-    dl = DataLoader(ds, batch, shuffle=True)
+    dl = DataLoader(ds, batch, shuffle=True, pin_memory=True)
 
     return dl

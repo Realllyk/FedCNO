@@ -118,14 +118,18 @@ if __name__ == '__main__':
     for c in clients:
         c.model = copy.deepcopy(global_model)
         c.test()
+        # 初始化测试后释放模型以节省显存
+        del c.model
+        c.model = None
 
     for epoch in range(args.epoch):
         print(f"Epoch {epoch} Training:------------------")
         server.initialize_epoch_updates(epoch)
         server.sample_clients(epoch)
 
-        for c in clients:
-            if c.model != None:
+        # 优化：只为选中的客户端分配模型副本，避免不必要的显存占用和 deepcopy 开销
+        for c in server.selected_clients:
+            if c.model is not None:
                 del c.model
             c.model = copy.deepcopy(server.global_model)
         
@@ -135,6 +139,12 @@ if __name__ == '__main__':
 
         server.average_weights()
         server.update_alpha()
+        
+        # 这一轮结束了，释放模型以节省显存
+        for c in server.selected_clients:
+            if c.model is not None:
+                del c.model
+                c.model = None
     
     # test_dl = gen_cbgru_valid_dl(args.vul, 0, args.batch)
     test_dl = gen_valid_dl(args.model_type, args.vul, args.data_dir)

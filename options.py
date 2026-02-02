@@ -385,5 +385,12 @@ def parse_args():
         help='Momentum coefficient for EMA model in FedCRD'
     )
 
+    parser.add_argument(
+        '--num_workers',
+        type=int,
+        default=4,
+        help='number of workers for parallel training'
+    )
+
     args = parser.parse_args()
     return args

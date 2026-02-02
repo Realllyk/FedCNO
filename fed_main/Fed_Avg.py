@@ -159,7 +159,7 @@ if __name__ == '__main__':
 
         # Parallel training
         futures = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
             for client_id in range(args.client_num):
                 # Correctly using client_id to access the corresponding dataset
                 futures.append(executor.submit(train_one_client, client_id, args, server.global_model, criterion, train_ds[client_id]))

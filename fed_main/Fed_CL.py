@@ -43,21 +43,39 @@ def train_one_client_clc(client_id, args, global_model, dataset, tao, conf_score
             # We must compute confidence first to generate sfm_Mat
             client.confidence()
             client.data_holdout(conf_score)
+            
+            # 手动清理 confidence 产生的中间变量
+            if hasattr(client, 'avai_dataset'):
+                del client.avai_dataset
+            torch.cuda.empty_cache()
+            
     elif stage == 'correct':
         if conf_score is not None:
             # We must compute confidence first to generate sfm_Mat
             client.confidence()
             client.data_holdout(conf_score)
             client.data_correct()
+            
+            # 手动清理
+            if hasattr(client, 'avai_dataset'):
+                del client.avai_dataset
+            torch.cuda.empty_cache()
 
     client.train()
     
-    weights = copy.deepcopy(client.get_parameters())
+    # Move weights to CPU to save VRAM
+    weights = client.get_parameters()
+    weights = {k: v.cpu() for k, v in weights.items()}
+
     num_samples = client.result['sample']
     result = client.result
     loss = client.result['loss']
     
-    # del client
+    # Cleanup
+    if hasattr(client, 'tb_writer'):
+        client.tb_writer.close()
+    
+    del client
     # torch.cuda.empty_cache()
     # gc.collect()
     
@@ -135,7 +153,7 @@ if __name__ == "__main__":
     print("Starting Warmup Stage")
     server.initialize_epoch_updates(-1)
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
         futures = []
         for i in range(args.client_num):
             futures.append(executor.submit(train_one_client_clc, i, args, server.global_model, datasets_dict['train'][i], tao, None, 'warmup'))
@@ -164,13 +182,21 @@ if __name__ == "__main__":
             conf, classnum = temp_client.sendconf()
             confs.append(conf)
             classnums.append(classnum)
-            del temp_client
             
+            # 显式清理 temp_client
+            if hasattr(temp_client, 'sfm_Mat'):
+                del temp_client.sfm_Mat
+            if hasattr(temp_client, 'tb_writer'):
+                temp_client.tb_writer.close()
+            del temp_client
+            torch.cuda.empty_cache()
+            
+        print() # Clear the progress line
         server.receiveconf(confs, classnums)
         conf_score = server.conf_agg()
         
         # 2. Parallel Training
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
             futures = []
             for ix in range(args.client_num):
                 futures.append(executor.submit(train_one_client_clc, ix, args, server.global_model, datasets_dict['train'][ix], tao, conf_score, 'holdout'))

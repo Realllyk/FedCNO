@@ -22,13 +22,21 @@ import random
 def train_client_warmup(client, global_model):
     client.model = copy.deepcopy(global_model)
     client.train()
-    weights = copy.deepcopy(client.get_parameters())
+    
+    # Move weights to CPU
+    weights = client.get_parameters()
+    weights = {k: v.cpu() for k, v in weights.items()}
+    
     num_samples = client.result['sample']
     result = client.result
     
     # Clean up
-    # torch.cuda.empty_cache()
-    # gc.collect()
+    del client.model
+    if hasattr(client, 'tb_writer'):
+        client.tb_writer.close()
+        
+    torch.cuda.empty_cache()
+    gc.collect()
     
     return client.client_id, weights, num_samples, result
 
@@ -43,19 +51,34 @@ def train_client_holdout(client, global_model, conf_score):
     if hasattr(client, 'data_loader'):
         client.dataloader = client.data_loader
     client.train()
-    weights = copy.deepcopy(client.get_parameters())
+    
+    # Move weights to CPU
+    weights = client.get_parameters()
+    weights = {k: v.cpu() for k, v in weights.items()}
+    
     num_samples = client.result['sample']
     result = client.result
     
     # Clean up
-    # torch.cuda.empty_cache()
-    # gc.collect()
+    del client.model
+    if hasattr(client, 'avai_dataset'):
+        del client.avai_dataset
+        
+    torch.cuda.empty_cache()
+    gc.collect()
     
     return client.client_id, weights, num_samples, result
 
 def prepare_client_correct(client, conf_score):
     client.data_holdout(conf_score)
     client.data_correct()
+    
+    # Clean up intermediate data if possible, though data_correct might set avai_dataset which is needed for training
+    # We only clean what's strictly temporary
+    if hasattr(client, 'sfm_Mat'):
+        del client.sfm_Mat
+    # torch.cuda.empty_cache()
+    
     return client.client_id
 
 def train_client_correct(client, global_model):
@@ -64,11 +87,19 @@ def train_client_correct(client, global_model):
     if hasattr(client, 'data_loader'):
         client.dataloader = client.data_loader
     client.train()
-    weights = copy.deepcopy(client.get_parameters())
+    
+    # Move weights to CPU
+    weights = client.get_parameters()
+    weights = {k: v.cpu() for k, v in weights.items()}
+    
     num_samples = client.result['sample']
     result = client.result
     
     # Clean up
+    del client.model
+    if hasattr(client, 'avai_dataset'):
+        del client.avai_dataset
+        
     # torch.cuda.empty_cache()
     # gc.collect()
     
@@ -169,7 +200,7 @@ if __name__ == "__main__":
     # Warmup Stage
     print("Warmup Stage...")
     server.initialize_epoch_updates(-1)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
         futures = [executor.submit(train_client_warmup, clients[i], server.global_model) for i in range(args.client_num)]
         for future in concurrent.futures.as_completed(futures):
             cid, weights, num_samples, result = future.result()
@@ -186,7 +217,7 @@ if __name__ == "__main__":
         confs = [None] * args.client_num
         classnums = [None] * args.client_num
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
             futures = [executor.submit(client_send_conf, clients[i]) for i in range(args.client_num)]
             for future in concurrent.futures.as_completed(futures):
                 cid, conf, classnum = future.result()
@@ -194,9 +225,10 @@ if __name__ == "__main__":
                 classnums[cid] = classnum
         
         server.receiveconf(confs, classnums)
+        print() # Clear the progress line
         conf_score = server.conf_agg()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
             futures = [executor.submit(train_client_holdout, clients[i], server.global_model, conf_score) for i in range(args.client_num)]
             for future in concurrent.futures.as_completed(futures):
                 cid, weights, num_samples, result = future.result()
@@ -215,7 +247,7 @@ if __name__ == "__main__":
         if not correct_done:
             confs = [None] * args.client_num
             classnums = [None] * args.client_num
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
                 futures = [executor.submit(client_send_conf, clients[i]) for i in range(args.client_num)]
                 for future in concurrent.futures.as_completed(futures):
                     cid, conf, classnum = future.result()
@@ -223,16 +255,17 @@ if __name__ == "__main__":
                     classnums[cid] = classnum
             
             server.receiveconf(confs, classnums)
+            print() # Clear the progress line
             conf_score = server.conf_agg()
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
                 futures = [executor.submit(prepare_client_correct, clients[i], conf_score) for i in range(args.client_num)]
                 for future in concurrent.futures.as_completed(futures):
                     pass
             
             correct_done = True
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
             futures = [executor.submit(train_client_correct, clients[i], server.global_model) for i in range(args.client_num)]
             for future in concurrent.futures.as_completed(futures):
                 cid, weights, num_samples, result = future.result()

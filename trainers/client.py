@@ -128,7 +128,7 @@ class Fed_Avg_client(object):
         return pure_dl
            
     def train(self):
-        dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True)
+        dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
         if self.args.model_type == "CBGRU":
             lr = self.args.cbgru_local_lr
         elif self.args.model_type == "CGE":
@@ -158,9 +158,9 @@ class Fed_Avg_client(object):
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_value)
                 optimizer.step()
 
-                del x1, x2, y, outputs, loss
-                torch.cuda.empty_cache()
-                gc.collect()
+                # del x1, x2, y, outputs, loss
+                # torch.cuda.empty_cache()
+                # gc.collect()
             
             # Record Average Loss
             avg_loss = self.result['loss'] / len(dataloader)
@@ -267,11 +267,11 @@ class Fed_PLE_client(object):
                     outer_loss.backward()
                     outer_optimizer.step()
                     
-                    del x1, x2, noise_labels, global_labels
-                    del h_x, gl_one_hot, nl_one_hot, cat_labels
-                    del outer_outputs, inner_loss, outer_loss
-                    torch.cuda.empty_cache()
-                    gc.collect()
+                    # del x1, x2, noise_labels, global_labels
+                    # del h_x, gl_one_hot, nl_one_hot, cat_labels
+                    # del outer_outputs, inner_loss, outer_loss
+                    # torch.cuda.empty_cache()
+                    # gc.collect()
 
             for e in range(1):
                 for x1, x2, noise_labels, global_labels in self.noise_dataloader:
@@ -302,12 +302,11 @@ class Fed_PLE_client(object):
                     inner_loss.backward()
                     inner_optimizer.step()
 
-                    del x1, x2, noise_labels, global_labels
-                    del h_x, gl_one_hot, nl_one_hot, cat_labels
-                    del outer_outputs, inner_loss
-
-                    torch.cuda.empty_cache()
-                    gc.collect()
+                    # del x1, x2, noise_labels, global_labels
+                    # del h_x, gl_one_hot, nl_one_hot, cat_labels
+                    # del outer_outputs, inner_loss
+                    # torch.cuda.empty_cache()
+                    # gc.collect()
 
     def validation(self):
         # validation_dl = gen_cbgru_valid_dl(self.args.vul)
@@ -324,9 +323,9 @@ class Fed_PLE_client(object):
                 all_predictions.extend(pred.flatten().tolist())
                 all_targets.extend(y.flatten().tolist())
 
-                del x1, x2, y
-                torch.cuda.empty_cache()
-                gc.collect()
+                # del x1, x2, y
+                # torch.cuda.empty_cache()
+                # gc.collect()
 
             tn, fp, fn, tp = confusion_matrix(all_targets, all_predictions).ravel()
             self.result['Recall(TPR)'] = tp / (tp + fn)
@@ -363,7 +362,7 @@ class Fed_ARFL_client(object):
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         self.result = dict()
         device = self.device
-        dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True)
+        dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
 
         for epoch in range(self.args.local_epoch):
             self.model.train()
@@ -380,9 +379,9 @@ class Fed_ARFL_client(object):
                 loss.backward()
                 optimizer.step()
                 
-                del x1, x2, y, outputs, loss
-                torch.cuda.empty_cache()
-                gc.collect()
+                # del x1, x2, y, outputs, loss
+                # torch.cuda.empty_cache()
+                # gc.collect()
     
     def test(self):
         device = self.device
@@ -391,7 +390,7 @@ class Fed_ARFL_client(object):
             # self.result['test_loss'] = 0
             self.test_loss = 0
             self.model.eval()
-            dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True)
+            dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
             for x1, x2, y in dataloader:
                 x1, x2, y = x1.to(device), x2.to(device), y.to(device)
                 outputs = self.model(x1, x2)
@@ -400,9 +399,9 @@ class Fed_ARFL_client(object):
                 loss = self.criterion(outputs, y)
                 # self.result['test_loss'] = self.result['test_loss'] + loss.item()
                 self.test_loss += loss.item()
-                del x1, x2, y, outputs, loss
-                torch.cuda.empty_cache()
-                gc.collect()
+                # del x1, x2, y, outputs, loss
+                # torch.cuda.empty_cache()
+                # gc.collect()
 
     def get_model_parameters(self):
         return self.model.state_dict()
@@ -432,7 +431,7 @@ class Fed_Corr_client(Fed_Avg_client):
             model,
             dataset
         )
-        self.dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True)
+        self.dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
         self.client_id = client_id
         self.global_round = global_round
         
@@ -490,9 +489,9 @@ class Fed_Corr_client(Fed_Avg_client):
                 loss.backward()
                 optimizer.step()
 
-                del x1, x2, y, outputs, loss
-                torch.cuda.empty_cache()
-                gc.collect()
+                # del x1, x2, y, outputs, loss
+                # torch.cuda.empty_cache()
+                # gc.collect()
 
             # Log loss
             if hasattr(self, 'client_id') and self.client_id is not None:
@@ -663,7 +662,7 @@ class Fed_LGV_client(object):
 
     # 使用全局模型直接生成概率标签
     def get_global_prob_labels(self, vul):
-        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False)
+        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False, pin_memory=True)
         gl_probs = []
         with torch.no_grad():
             self.model.eval()
@@ -689,7 +688,7 @@ class Fed_LGV_client(object):
             name_path = os.path.join(self.args.data_dir, f"graduate_client_split/{vul}/client_{self.client_id}/contract_name_train.txt")
 
         # Before local training, new local model is global model
-        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False)
+        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False, pin_memory=True)
         gl_labels = []
         with torch.no_grad():
             self.model.eval()
@@ -742,7 +741,7 @@ class Fed_LGV_client(object):
         
     # 使用全局模型生成的特征来进行knn
     def get_global_feature_knn_labels(self):
-        dl = DataLoader(self.reduced_ds, batch_size=self.args.batch, shuffle=False)
+        dl = DataLoader(self.reduced_ds, batch_size=self.args.batch, shuffle=False, pin_memory=True)
         outputs_list = []
         with torch.no_grad():
             self.model.eval()
@@ -784,7 +783,7 @@ class Fed_LGV_client(object):
              return 
 
         # 1. 对 reduced_ds 进行全量推理，获取每个样本的当前模型预测概率
-        dl = DataLoader(self.reduced_ds, batch_size=self.args.batch, shuffle=False)
+        dl = DataLoader(self.reduced_ds, batch_size=self.args.batch, shuffle=False, pin_memory=True)
         all_probs_list = []
         
         with torch.no_grad():
@@ -851,7 +850,7 @@ class Fed_LGV_client(object):
         # self.dataset.set_ag_rt(full_agr)
 
     def warmup_train(self):
-        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True)
+        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
         if self.args.model_type == "CBGRU":
             lr = self.args.cbgru_local_lr
         elif self.args.model_type == "CGE":
@@ -882,9 +881,9 @@ class Fed_LGV_client(object):
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_value)
                 optimizer.step()
 
-                del x1, x2, y, outputs, loss
-                torch.cuda.empty_cache()
-                gc.collect()
+                # del x1, x2, y, outputs, loss
+                # torch.cuda.empty_cache()
+                # gc.collect()
                 
     def train(self):
         # ---------------- FedCNO: 动态 alpha 计算与数据集标签更新 ----------------
@@ -903,7 +902,7 @@ class Fed_LGV_client(object):
         # 使用 self.fixed_global_model (本轮固定的全局视图)
         
         # 创建一个不打乱的 DataLoader 以便按顺序获取不确定性
-        eval_dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False)
+        eval_dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False, pin_memory=True)
         all_uncertainties = []
         
         with torch.no_grad():
@@ -975,8 +974,8 @@ class Fed_LGV_client(object):
         self.dataset.labels = labels.detach().cpu().numpy()
         
         # ---------------------------------------------------------------------
-
-        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True)
+        
+        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
         if self.args.model_type == "CBGRU":
             lr = self.args.cbgru_local_lr
         elif self.args.model_type == "CGE":
@@ -1019,9 +1018,9 @@ class Fed_LGV_client(object):
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_value)
                 optimizer.step()
 
-                del x1, x2, y, outputs, loss
-                torch.cuda.empty_cache()
-                gc.collect()
+                # del x1, x2, y, outputs, loss
+                # torch.cuda.empty_cache()
+                # gc.collect()
 
             # Record Average Loss
             avg_loss = self.result['loss'] / len(dl)
@@ -1156,7 +1155,7 @@ class Fed_CRD_client(Fed_Avg_client):
         
         # Create Subset
         reduced_ds = Subset(self.dataset, indices)
-        dl = DataLoader(reduced_ds, batch_size=self.args.batch, shuffle=False)
+        dl = DataLoader(reduced_ds, batch_size=self.args.batch, shuffle=False, pin_memory=True)
         
         all_probs = []
         global_model.eval()
@@ -1218,7 +1217,7 @@ class Fed_CRD_client(Fed_Avg_client):
         FedCRD datasets (reused from LGV) might return extra values (agr, index), 
         but we only need x1, x2, y for standard CrossEntropy training.
         """
-        dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True)
+        dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
         if self.args.model_type == "CBGRU":
             lr = self.args.cbgru_local_lr
         elif self.args.model_type == "CGE":
@@ -1256,9 +1255,9 @@ class Fed_CRD_client(Fed_Avg_client):
                 
                 optimizer.step()
 
-                del x1, x2, y, outputs, loss
-                torch.cuda.empty_cache()
-                gc.collect()
+                # del x1, x2, y, outputs, loss
+                # torch.cuda.empty_cache()
+                # gc.collect()
             
             # Record Average Loss
             avg_loss = self.result['loss'] / len(dataloader)
@@ -1287,7 +1286,7 @@ class Fed_CLC_client(object):
         self.dataset = dataset
         self.client_id = client_id
         self.tao = tao
-        self.dataloader = DataLoader(self.dataset, batch_size=args.batch, shuffle=True)
+        self.dataloader = DataLoader(self.dataset, batch_size=args.batch, shuffle=True, pin_memory=True)
 
     def get_parameters(self):
         return self.model.state_dict()
@@ -1319,14 +1318,14 @@ class Fed_CLC_client(object):
                 loss.backward()
                 optimizer.step()
 
-                del x1, x2, y, outputs, loss
-                torch.cuda.empty_cache()
-                gc.collect()
+                # del x1, x2, y, outputs, loss
+                # torch.cuda.empty_cache()
+                # gc.collect()
 
     def sendconf(self):
         confListU, class_nums = self.confidence()
         sys.stdout.write('\r')
-        sys.stdout.write('User = [%d/%d]  | confidence is computed '
+        sys.stdout.write('User = [%d/%d]  | confidence is computed        '
                          % (self.client_id, self.args.client_num))
         sys.stdout.flush()
         return confListU, class_nums
@@ -1422,19 +1421,19 @@ class Fed_CLC_client(object):
 
         self.model.eval()
         device = self.args.device
-        val_loader = DataLoader(dataset, batch_size=self.args.batch, shuffle=False)
-        outputs = []
+        val_loader = DataLoader(dataset, batch_size=self.args.batch, shuffle=False, pin_memory=True)
+        outputs_list = []
         with torch.no_grad():
             for x1, x2, labels in val_loader:
-                x1, x2, labels = x1.to(device), x2.to(device), labels.to(device)
-                if len(outputs) == 0:
-                    outputs = self.model(x1, x2)
-                else:
-                    outputs = torch.cat([outputs, self.model(x1, x2)], dim=0)
+                x1, x2 = x1.to(device), x2.to(device)
+                batch_out = self.model(x1, x2)
+                outputs_list.append(batch_out.cpu()) # Move to CPU immediately
+
+        outputs = torch.cat(outputs_list, dim=0)
         
         psx_cv = F.softmax(outputs, dim=1)
         
-        psx = psx_cv.cpu().numpy().reshape((-1, self.args.num_classes))
+        psx = psx_cv.numpy().reshape((-1, self.args.num_classes))
         s = s.reshape([s.size, 1])
         sfm_Mat = np.hstack((psx, s))
 
@@ -1442,7 +1441,7 @@ class Fed_CLC_client(object):
 
     def data_correct(self):
         self.avai_dataset.labels = np.array(self.sudo_labels)[self.reserve]
-        self.data_loader = DataLoader(self.avai_dataset, batch_size=self.args.batch, shuffle=True)
+        self.data_loader = DataLoader(self.avai_dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
 
 
 
@@ -1547,8 +1546,8 @@ class Fed_Ablation_client(Fed_PLE_client):
                 
                     self.result['classifier_loss'] = self.result['classifier_loss'] + inner_loss.item()
                     
-                    del x1, x2, noise_labels, global_labels
-                    del h_x, gl_one_hot, nl_one_hot, cat_labels
-                    del outer_outputs, inner_loss
-                    torch.cuda.empty_cache()
-                    gc.collect()
+                    # del x1, x2, noise_labels, global_labels
+                    # del h_x, gl_one_hot, nl_one_hot, cat_labels
+                    # del outer_outputs, inner_loss
+                    # torch.cuda.empty_cache()
+                    # gc.collect()

@@ -3,11 +3,11 @@ import json
 import torch
 import random
 import numpy as np
-import torch
 import pandas as pd
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+from models.KMeansTorch import KMeansTorch
 
 
 def vec2one(input):
@@ -218,7 +218,13 @@ def compute_global_clusters(all_name_paths, pre_feature_dir, n_clusters=20, seed
     Zs = scaler.fit_transform(pre_features)
     
     # Global KMeans
-    kmeans = KMeans(n_clusters=n_clusters, random_state=seed, n_init=10)
+    if torch.cuda.is_available():
+        print(f"  [Info] Using GPU (KMeansTorch) for global clustering.")
+        kmeans = KMeansTorch(n_clusters=n_clusters, seed=seed, device='cuda')
+    else:
+        print(f"  [Info] Using CPU (sklearn.cluster.KMeans) for global clustering.")
+        kmeans = KMeans(n_clusters=n_clusters, random_state=seed, n_init=10)
+        
     cluster_ids = kmeans.fit_predict(Zs)
     
     # Create map
@@ -391,7 +397,14 @@ def gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_
         # 标准化 + 聚类
         scaler = StandardScaler()
         Zs = scaler.fit_transform(Zk)
-        kmeans = KMeans(n_clusters=n_clusters, random_state=seed, n_init=10)
+        
+        if torch.cuda.is_available():
+            print(f"Using device: cuda (KMeansTorch)")
+            kmeans = KMeansTorch(n_clusters=n_clusters, seed=seed, device='cuda')
+        else:
+            print(f"Using device: cpu (sklearn.cluster.KMeans)")
+            kmeans = KMeans(n_clusters=n_clusters, random_state=seed, n_init=10)
+            
         cluster_ids = kmeans.fit_predict(Zs) # shape (n,)
 
     # 2. 统计每个簇的翻转候选信息 (Flip Candidates)
