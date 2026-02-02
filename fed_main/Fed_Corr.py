@@ -24,6 +24,9 @@ from global_test import global_test
 
 
 def setup_seed(seed):
+    if seed is not None:
+        seed = int(seed)
+    print(f"Seed setup with type: {type(seed)}")
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)

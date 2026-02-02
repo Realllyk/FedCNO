@@ -132,9 +132,17 @@ if __name__ == '__main__':
         for i, c in enumerate(server.selected_clients):
             c.train()
             print(f"Selected Client {i} Train Loss: {c.result['loss']}")
+            
+            # Clean up
+            torch.cuda.empty_cache()
+            gc.collect()
 
         server.average_weights()
         server.update_alpha()
+        
+        # Clean up after update_alpha (which calls test())
+        torch.cuda.empty_cache()
+        gc.collect()
     
     # test_dl = gen_cbgru_valid_dl(args.vul, 0, args.batch)
     test_dl = gen_valid_dl(args.model_type, args.vul, args.data_dir)

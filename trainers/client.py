@@ -402,6 +402,7 @@ class Fed_ARFL_client(object):
                 # del x1, x2, y, outputs, loss
                 # torch.cuda.empty_cache()
                 # gc.collect()
+        self.test_loss = self.test_loss / len(dataloader)
 
     def get_model_parameters(self):
         return self.model.state_dict()
