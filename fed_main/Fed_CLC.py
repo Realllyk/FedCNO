@@ -40,8 +40,12 @@ def train_client_warmup(client, global_model):
     
     return client.client_id, weights, num_samples, result
 
-def client_send_conf(client):
+def client_send_conf(client, global_model):
+    client.model = copy.deepcopy(global_model)
     conf, classnum = client.sendconf()
+    del client.model
+    torch.cuda.empty_cache()
+    gc.collect()
     return client.client_id, conf, classnum
 
 def train_client_holdout(client, global_model, conf_score):
@@ -218,7 +222,7 @@ if __name__ == "__main__":
         classnums = [None] * args.client_num
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
-            futures = [executor.submit(client_send_conf, clients[i]) for i in range(args.client_num)]
+            futures = [executor.submit(client_send_conf, clients[i], server.global_model) for i in range(args.client_num)]
             for future in concurrent.futures.as_completed(futures):
                 cid, conf, classnum = future.result()
                 confs[cid] = conf
@@ -248,7 +252,7 @@ if __name__ == "__main__":
             confs = [None] * args.client_num
             classnums = [None] * args.client_num
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
-                futures = [executor.submit(client_send_conf, clients[i]) for i in range(args.client_num)]
+                futures = [executor.submit(client_send_conf, clients[i], server.global_model) for i in range(args.client_num)]
                 for future in concurrent.futures.as_completed(futures):
                     cid, conf, classnum = future.result()
                     confs[cid] = conf
