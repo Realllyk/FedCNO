@@ -143,16 +143,16 @@ if __name__ == '__main__':
     
     run_timestamp = time.strftime("%Y%m%d_%H%M%S")
 
-    # Initialize clients list
-    clients = []
-    for client_id in range(args.client_num):
-        client = Fed_Avg_client(args,
-                            criterion,
-                            copy.deepcopy(server.global_model),
-                            train_ds[client_id],
-                            client_id=client_id,
-                            run_timestamp=run_timestamp)
-        clients.append(client)
+    # Initialize clients list (Commented out as it is unused in parallel training)
+    # clients = []
+    # for client_id in range(args.client_num):
+    #     client = Fed_Avg_client(args,
+    #                         criterion,
+    #                         copy.deepcopy(server.global_model),
+    #                         train_ds[client_id],
+    #                         client_id=client_id,
+    #                         run_timestamp=run_timestamp)
+    #     clients.append(client)
     
     for epoch in range(args.epoch):
         server.initialize_epoch_updates(epoch)
