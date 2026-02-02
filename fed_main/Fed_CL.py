@@ -57,9 +57,9 @@ def train_one_client_clc(client_id, args, global_model, dataset, tao, conf_score
     result = client.result
     loss = client.result['loss']
     
-    del client
-    torch.cuda.empty_cache()
-    gc.collect()
+    # del client
+    # torch.cuda.empty_cache()
+    # gc.collect()
     
     return client_id, weights, num_samples, result, loss
 

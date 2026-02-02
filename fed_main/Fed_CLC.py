@@ -27,8 +27,8 @@ def train_client_warmup(client, global_model):
     result = client.result
     
     # Clean up
-    torch.cuda.empty_cache()
-    gc.collect()
+    # torch.cuda.empty_cache()
+    # gc.collect()
     
     return client.client_id, weights, num_samples, result
 
@@ -48,8 +48,8 @@ def train_client_holdout(client, global_model, conf_score):
     result = client.result
     
     # Clean up
-    torch.cuda.empty_cache()
-    gc.collect()
+    # torch.cuda.empty_cache()
+    # gc.collect()
     
     return client.client_id, weights, num_samples, result
 
@@ -69,8 +69,8 @@ def train_client_correct(client, global_model):
     result = client.result
     
     # Clean up
-    torch.cuda.empty_cache()
-    gc.collect()
+    # torch.cuda.empty_cache()
+    # gc.collect()
     
     return client.client_id, weights, num_samples, result
 
