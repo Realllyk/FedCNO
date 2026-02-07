@@ -149,7 +149,7 @@ def gen_cbgru_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh=
     return ds, data_indices
 
 
-def gen_cge_whole_dataset(client_num, vul, noise_type, noise_rate, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir=None):
+def gen_cge_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir=None):
     if data_dir is None:
         raise ValueError("data_dir must be provided")
     graph_dir = os.path.join(data_dir, f'cge_data/{vul}/graph_feature')
@@ -181,13 +181,13 @@ def gen_cge_whole_dataset(client_num, vul, noise_type, noise_rate, num_neigh=0, 
         all_names.extend(names)
 
         if noise_type == 'non_noise' or noise_type == 'fn_noise':
-            noise_labels = gen_noise_labels(names_path, labels_path, noise_type, noise_rate)
+            noise_labels = gen_noise_labels(names_path, labels_path, noise_type, noise_rates[client_id])
         elif noise_type == 'sys_noise':
             pre_feature_dir = os.path.join(data_dir, f"pretrain_feature/{vul}")
             # noise_labels = gen_sys_noise_labels(names_path, labels_path, pre_feature_dir, 'sys_noise', noise_rate, num_neigh)
             # 使用基于 KMeans 的新系统性噪声生成方法
             cluster_indices = assigned_clusters[client_id] if assigned_clusters else None
-            noise_labels = gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_rate, n_clusters=n_clusters, seed=seed, assigned_cluster_indices=cluster_indices, global_cluster_map=global_cluster_map)
+            noise_labels = gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_rates[client_id], n_clusters=n_clusters, seed=seed, assigned_cluster_indices=cluster_indices, global_cluster_map=global_cluster_map)
         all_labels.extend(noise_labels)
 
         data_indices.append(list(range(offset, bound)))

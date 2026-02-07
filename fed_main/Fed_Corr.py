@@ -145,11 +145,12 @@ def train_simple_client(idx, args, global_model, criterion, dataset_client, run_
     weights = copy.deepcopy(client.get_parameters())
     num_samples = client.result['sample']
     train_result = client.result
+    loss = client.result['loss']
     
     del client
     # torch.cuda.empty_cache() # 单GPU多线程场景下避免频繁清理显存导致同步阻塞
     
-    return idx, weights, num_samples, train_result
+    return idx, weights, num_samples, train_result, loss
 
 
 if __name__ == "__main__":
@@ -333,8 +334,10 @@ if __name__ == "__main__":
                     ))
                 
                 for future in futures:
-                    idx, weights, num_samples, train_result = future.result()
+                    idx, weights, num_samples, train_result, loss = future.result()
                     server.save_train_updates(weights, num_samples, train_result)
+                    print(f"client:{idx}")
+                    print(f"loss is {loss}")
             
             server.average_weights()
             global_round_counter += 1
@@ -380,8 +383,10 @@ if __name__ == "__main__":
                 ))
             
             for future in futures:
-                idx, weights, num_samples, train_result = future.result()
-                server.save_train_updates(weights, num_samples, train_result)
+                    idx, weights, num_samples, train_result, loss = future.result()
+                    server.save_train_updates(weights, num_samples, train_result)
+                    print(f"client:{idx}")
+                    print(f"loss is {loss}")
 
         server.average_weights()
         global_round_counter += 1

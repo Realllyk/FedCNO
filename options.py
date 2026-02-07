@@ -392,5 +392,11 @@ def parse_args():
         help='number of workers for parallel training'
     )
 
-    args = parser.parse_args()
-    return args
+    # FedELC Arguments
+    parser.add_argument('--epoch_of_stage1', type=int, default=20, help='number of epochs for stage 1')
+    parser.add_argument('--lambda_pencil', type=float, default=1000, help='lamda for pencil loss')
+    parser.add_argument('--alpha_pencil', type=float, default=0.5, help='alpha for pencil loss')
+    parser.add_argument('--beta_pencil', type=float, default=0.2, help='beta for pencil loss')
+    parser.add_argument('--K_pencil', type=int, default=10, help='number of pencils')
+
+    return parser.parse_args()
