@@ -399,4 +399,19 @@ def parse_args():
     parser.add_argument('--beta_pencil', type=float, default=0.2, help='beta for pencil loss')
     parser.add_argument('--K_pencil', type=int, default=10, help='number of pencils')
 
+    # FedDSHAR Arguments
+    parser.add_argument('--dshar_warmup_epoch', type=int, default=10, help='warmup epochs before dual-strategy training')
+    parser.add_argument('--dshar_split_ratio', type=float, default=0.3, help='ratio of noisy subset split by MR confidence')
+    parser.add_argument('--dshar_mr_refresh_interval', type=int, default=1, help='refresh interval of MR split')
+    parser.add_argument('--dshar_aug_noise_std', type=float, default=0.02, help='gaussian noise std for clean augmentation')
+    parser.add_argument('--dshar_aug_mask_ratio', type=float, default=0.1, help='feature mask ratio for clean augmentation')
+    parser.add_argument('--dshar_lambda_div', type=float, default=0.1, help='weight for diversity regularization on clean subset')
+    parser.add_argument('--dshar_pseudo_threshold', type=float, default=0.8, help='confidence threshold for pseudo-label training')
+    parser.add_argument('--dshar_ema_beta', type=float, default=0.99, help='EMA momentum for teacher model')
+    parser.add_argument('--dshar_w_clean', type=float, default=1.0, help='weight for clean-branch loss')
+    parser.add_argument('--dshar_w_noisy', type=float, default=1.0, help='weight for noisy-branch loss')
+    parser.add_argument('--dshar_la_tau', type=float, default=1.0, help='temperature scale for logit adjustment')
+    parser.add_argument('--dshar_early_stop_patience', type=int, default=10, help='early stopping patience on validation F1; <=0 disables')
+    parser.add_argument('--dshar_early_stop_min_delta', type=float, default=1e-4, help='minimum F1 improvement to reset early stopping counter')
+
     return parser.parse_args()
