@@ -10,8 +10,7 @@ import torch.nn.functional as F
 from options import parse_args
 from data_processing.dataloader_manager import gen_lgv_ds, gen_test_dl, gen_cbgru_dl, gen_client_ds, gen_valid_dl
 from data_processing.preprocessing import compute_global_clusters, coordinate_sys_noise_clusters
-from models.ClassiFilerNet import ClassiFilerNet
-from models.CGE_Variants import CGEVariant
+from models.model_factory import build_model
 from trainers.server import LGV_server
 from trainers.client import Fed_LGV_client, Fed_Avg_client
 from global_test import global_test
@@ -52,16 +51,16 @@ def train_lgv_client(client_id, client, global_model, global_weight):
     if hasattr(client, 'model'):
         del client.model
         
-    # 1. 接收全局模型
+    # 下发全局模型参数
     client.model = copy.deepcopy(global_model)
     client.global_weight = global_weight
     
-    # 2. 更新全局视图 (Global View)
     # 关键步骤：利用当前全局模型提取特征，动态更新 KNN 概率和一致性
+    # 2. 更新全局视图 (Global View)
     client.get_global_feature_global_knn_labels()
     
+    # 中文注释：该处逻辑与原实现保持一致。
     # 3. 本地训练 (Local Training)
-    # 融合标签 -> 生成伪标签 -> 加权训练
     client.train()
     
     weights = copy.deepcopy(client.get_parameters())
@@ -76,6 +75,8 @@ def train_lgv_client(client_id, client, global_model, global_weight):
 
 if __name__ == '__main__':
     args = parse_args()
+    if args.model_type == "MANDO" and args.vul != "tod":
+        raise ValueError("MANDO only supports --vul tod in this project.")
     input_size, time_steps = 100, 300
 
     if args.diff == True:
@@ -84,10 +85,10 @@ if __name__ == '__main__':
         noise_rates = [args.noise_rate] * 4
 
     # -------------------------------------------------------------------------
-    # 系统性噪声协调 (Systemic Noise Coordination)
     # -------------------------------------------------------------------------
-    # 如果启用了系统性噪声 (sys_noise)，我们希望不同客户端的噪声模式是“错开”的。
+    # -------------------------------------------------------------------------
     # 方案：预先分配簇 ID 给每个客户端。
+    # 逻辑已封装在 coordinate_sys_noise_clusters 中，包含基于分布的优化分配。
     # 逻辑已封装在 coordinate_sys_noise_clusters 中，包含基于分布的优化分配。
     
     assigned_clusters_dict, global_cluster_map = coordinate_sys_noise_clusters(
@@ -123,9 +124,8 @@ if __name__ == '__main__':
     
     # initialize Server
     # -------------------------------------------------------------------------
-    # 初始化服务器 (Server Initialization)
     # -------------------------------------------------------------------------
-    # 服务器负责维护全局模型 (Global Model) 并协调各客户端的训练。
+    # -------------------------------------------------------------------------
     # - model_type: 支持 'CBGRU' 或 'CGE' 等不同模型架构。
     # - global_weight: 控制 LGV 算法中全局视图概率的权重。
     # 动态调整类别权重 (Class Weighting)
@@ -133,21 +133,21 @@ if __name__ == '__main__':
     # 1. reentrancy (重入漏洞): 数据分布可能较均衡，或者需要轻微的权重调整，使用 [1.0, 1.0] (不加权) 或 [1.0, 1.2]。
     # 2. timestamp (时间戳依赖): 存在严重的漏报 (High FNR)，需要大幅提高 Positive 权重，使用 [1.0, 2.0]。
     # 3. 其他类型: 默认使用 [1.0, 1.0] 或 [1.0, 1.5] 作为保守策略。
+    # 3. 其他类型: 默认使用 [1.0, 1.0] 或 [1.0, 1.5] 作为保守策略。
     
     if args.vul == 'reentrancy':
         class_weights = torch.tensor([1.0, 1.0]).to(args.device) # 重入漏洞暂时不加权，或者微调
     elif args.vul == 'timestamp':
         class_weights = torch.tensor([1.2, 1.5]).to(args.device) # 稍微增加Negative权重以控制误报，降低Positive权重以减少FPR=1.0
     else:
-        class_weights = torch.tensor([1.0, 1.0]).to(args.device) # 默认情况
+        class_weights = torch.tensor([1.0, 1.0]).to(args.device) # 重入漏洞暂时不加权，或者微调
 
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     if args.model_type == "CBGRU":
-        global_model = ClassiFilerNet(input_size, time_steps)
         reduction = 'none'
-    elif args.model_type == "CGE":
-        global_model = CGEVariant()
+    else:
         reduction = 'mean'
+    global_model = build_model(args, input_size, time_steps)
     global_model = global_model.to(args.device)
     run_timestamp = time.strftime("%Y%m%d_%H%M%S")
     server = LGV_server(

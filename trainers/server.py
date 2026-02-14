@@ -1,6 +1,7 @@
 import torch
 import copy
 import numpy as np
+import math
 import torch
 import torch.nn as nn
 import torch.functional as F
@@ -8,6 +9,26 @@ from trainers.evaluation import Evaluation
 from sklearn.metrics import f1_score
 import os
 import time
+
+
+def _move_to_device(obj, device):
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        return {k: _move_to_device(v, device) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_move_to_device(v, device) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_move_to_device(v, device) for v in obj)
+    return obj
+
+
+def _unpack_batch(batch):
+    if len(batch) == 3:
+        return batch[0], batch[1], batch[2]
+    if len(batch) == 4:
+        return batch[0], batch[1], batch[2]
+    raise ValueError(f"Unexpected batch length={len(batch)} in server autotune")
 
 
 class Server(object):
@@ -211,8 +232,11 @@ class LGV_server(Server):
                 f.write("Timestamp,Validation_Loss,Macro_F1\n")
         
         with torch.no_grad():
-            for x1, x2, y in valid_dl:
-                x1, x2, y = x1.to(self.args.device), x2.to(self.args.device), y.to(self.args.device)
+            for batch in valid_dl:
+                x1, x2, y = _unpack_batch(batch)
+                x1 = _move_to_device(x1, self.args.device)
+                x2 = _move_to_device(x2, self.args.device)
+                y = _move_to_device(y, self.args.device)
                 y = y.flatten().long()
                 outputs = self.global_model(x1, x2)
 
@@ -333,78 +357,137 @@ class CRD_server(Server):
         """
         if not updates_list:
             return
-            
-        # 1. Compute Reference Update (delta_bar)
+
+        # Legacy implementation (kept for reference, DO NOT DELETE):
+        # - relative magnitude consistency m_k = exp(-|log(||delta_k||/||delta_bar||)|)
+        # - corrected reliability q_tilde clipped to [0, 1]
+        # - clipping threshold C_k = C_min + (C_max - C_min) * q_tilde
+        #
+        # num_clients = len(updates_list)
+        # first_delta = updates_list[0][1]
+        # delta_bar = {k: torch.zeros_like(v).float() for k, v in first_delta.items()}
+        # for _, delta, _, _ in updates_list:
+        #     for k, v in delta.items():
+        #         delta_bar[k] += v.float()
+        # for k in delta_bar.keys():
+        #     delta_bar[k] /= num_clients
+        # def flatten(state_dict):
+        #     return torch.cat([v.flatten().float() for v in state_dict.values()])
+        # delta_bar_vec = flatten(delta_bar).to(self.device)
+        # norm_delta_bar = torch.norm(delta_bar_vec) + 1e-8
+        # processed_updates = []
+        # total_weight = 0.0
+        # for client_id, delta, q_k, n_k in updates_list:
+        #     delta_vec = flatten(delta).to(self.device)
+        #     norm_delta = torch.norm(delta_vec) + 1e-8
+        #     cos_sim = torch.dot(delta_vec, delta_bar_vec) / (norm_delta * norm_delta_bar)
+        #     s_k = cos_sim.item()
+        #     ratio = norm_delta / norm_delta_bar
+        #     m_k = torch.exp(-torch.abs(torch.log(ratio))).item()
+        #     r_k = s_k * m_k
+        #     q_tilde = q_k + self.alpha_crd * r_k
+        #     q_tilde = max(0.0, min(1.0, q_tilde))
+        #     C_k = self.C_min + (self.C_max - self.C_min) * q_tilde
+        #     scaling_factor = min(1.0, C_k / (norm_delta.item() + 1e-8))
+        #     hat_delta = {k: v * scaling_factor for k, v in delta.items()}
+        #     omega_k = n_k * q_tilde
+        #     processed_updates.append((hat_delta, omega_k))
+        #     total_weight += omega_k
+        # if total_weight == 0:
+        #     return
+        # global_update = {k: torch.zeros_like(v).float() for k, v in first_delta.items()}
+        # for hat_delta, omega in processed_updates:
+        #     normalized_weight = omega / total_weight
+        #     for k, v in hat_delta.items():
+        #         global_update[k] += v.to(self.device) * normalized_weight
+
+        # Thesis-aligned implementation:
+        # (1) r_raw_k^t = cos(delta_k^t, delta_bar^t) * exp(-lambda * ||delta_k^t||)
+        # (2) r_hat_k^t = q_k^t + alpha * r_raw_k^t
+        # (3) r_tilde_k^t = softplus(r_hat_k^t) / sum_u softplus(r_hat_u^t)
+        # (4) tau^t is rho-quantile of ||delta_k^t|| over participating clients
+        # (5) delta_k,clip^t = min(||delta_k^t||, tau^t) / (||delta_k^t|| + eps) * delta_k^t
+        # (6) omega_k^t = n_k * r_tilde_k^t / sum_u n_u * r_tilde_u^t
+        crd_eps = float(getattr(self.args, 'crd_eps', 1e-8))
+        crd_rho = float(getattr(self.args, 'crd_rho', 0.7))
+        crd_rho = max(0.0, min(1.0, crd_rho))
+        crd_sigma = str(getattr(self.args, 'crd_sigma', 'softplus')).lower()
+        if crd_sigma != 'softplus':
+            print(f"[FedCRD] crd_sigma={crd_sigma} is unsupported, fallback to softplus.")
+
         num_clients = len(updates_list)
-        
-        # Initialize delta_bar with zeros
         first_delta = updates_list[0][1]
-        delta_bar = {k: torch.zeros_like(v).float() for k, v in first_delta.items()}
-        
-        for _, delta, _, _ in updates_list:
-            for k, v in delta.items():
-                delta_bar[k] += v.float()
-                
-        for k in delta_bar.keys():
-            delta_bar[k] /= num_clients
-            
-        # Flatten delta_bar for cosine similarity calculation
+
         def flatten(state_dict):
             return torch.cat([v.flatten().float() for v in state_dict.values()])
-            
-        delta_bar_vec = flatten(delta_bar).to(self.device)
-        norm_delta_bar = torch.norm(delta_bar_vec) + 1e-8
-        
-        # 2. Process each client
-        processed_updates = [] # list of (hat_delta, omega)
-        total_weight = 0.0
-        
-        for client_id, delta, q_k, n_k in updates_list:
-            delta_vec = flatten(delta).to(self.device)
-            norm_delta = torch.norm(delta_vec) + 1e-8
-            
-            # Direction Consistency (s_k)
-            cos_sim = torch.dot(delta_vec, delta_bar_vec) / (norm_delta * norm_delta_bar)
-            s_k = cos_sim.item()
-            
-            # Magnitude Consistency (m_k)
-            ratio = norm_delta / norm_delta_bar
-            m_k = torch.exp(-torch.abs(torch.log(ratio))).item()
-            
-            # Training Process Signal (r_k)
-            r_k = s_k * m_k
-            
-            # Corrected Reliability (q_tilde)
-            q_tilde = q_k + self.alpha_crd * r_k
-            q_tilde = max(0.0, min(1.0, q_tilde)) # clip to [0, 1]
-            
-            # Adaptive Clipping Threshold (C_k)
-            C_k = self.C_min + (self.C_max - self.C_min) * q_tilde
-            
-            # Perform Clipping (hat_delta)
-            scaling_factor = min(1.0, C_k / (norm_delta.item() + 1e-8))
-            
-            hat_delta = {k: v * scaling_factor for k, v in delta.items()}
-            
-            # Aggregation Weight (omega_k)
-            omega_k = n_k * q_tilde
-            
-            processed_updates.append((hat_delta, omega_k))
-            total_weight += omega_k
-            
-        # 3. Aggregate
-        if total_weight == 0:
-            print("Total weight is 0, skipping update")
-            return
-            
-        # Initialize global update with zeros
+
+        # 1) Reference update delta_bar^t
+        delta_bar = {k: torch.zeros_like(v).float() for k, v in first_delta.items()}
+        for _, delta_k_t, _, _ in updates_list:
+            for k, v in delta_k_t.items():
+                delta_bar[k] += v.float()
+        for k in delta_bar.keys():
+            delta_bar[k] /= num_clients
+
+        delta_bar_t_vec = flatten(delta_bar).to(self.device)
+        norm_delta_bar_t = torch.norm(delta_bar_t_vec).item()
+
+        # 2) Compute r_raw and r_hat for each client
+        client_stats = []
+        sigma_sum = 0.0
+        for client_id, delta_k_t, q_k_t, n_k in updates_list:
+            delta_k_t_vec = flatten(delta_k_t).to(self.device)
+            norm_delta_k_t = torch.norm(delta_k_t_vec).item()
+
+            denom = (norm_delta_k_t * norm_delta_bar_t) + crd_eps
+            cos_sim = (torch.dot(delta_k_t_vec, delta_bar_t_vec).item()) / denom
+            r_raw_k_t = cos_sim * np.exp(-self.lambda_crd * norm_delta_k_t)
+            r_hat_k_t = q_k_t + self.alpha_crd * r_raw_k_t
+
+            sigma_k_t = torch.nn.functional.softplus(
+                torch.tensor(r_hat_k_t, dtype=torch.float32, device=self.device)
+            ).item()
+            sigma_sum += sigma_k_t
+
+            client_stats.append(
+                {
+                    'client_id': client_id,
+                    'delta_k_t': delta_k_t,
+                    'n_k': n_k,
+                    'norm_delta_k_t': norm_delta_k_t,
+                    'r_raw_k_t': r_raw_k_t,
+                    'r_hat_k_t': r_hat_k_t,
+                    'sigma_k_t': sigma_k_t
+                }
+            )
+
+        # 3) Positive and normalized reliability r_tilde
+        sigma_denom = sigma_sum + crd_eps
+        for stat in client_stats:
+            stat['r_tilde_k_t'] = stat['sigma_k_t'] / sigma_denom
+
+        # 4) Rho-quantile adaptive clipping threshold tau^t
+        norms_sorted = sorted([stat['norm_delta_k_t'] for stat in client_stats])
+        n_t = len(norms_sorted)
+        quantile_rank = max(1, min(n_t, int(math.ceil(crd_rho * n_t))))
+        tau_t = norms_sorted[quantile_rank - 1]
+
+        # 5) Clip updates and 6) reliability-weighted aggregation
+        omega_denom = sum([stat['n_k'] * stat['r_tilde_k_t'] for stat in client_stats]) + crd_eps
         global_update = {k: torch.zeros_like(v).float() for k, v in first_delta.items()}
-        
-        for hat_delta, omega in processed_updates:
-            normalized_weight = omega / total_weight
-            for k, v in hat_delta.items():
-                global_update[k] += v.to(self.device) * normalized_weight
-                
+        sum_omega = 0.0
+
+        for stat in client_stats:
+            norm_delta_k_t = stat['norm_delta_k_t']
+            clip_scale = min(norm_delta_k_t, tau_t) / (norm_delta_k_t + crd_eps)
+            delta_k_t_clip = {k: v * clip_scale for k, v in stat['delta_k_t'].items()}
+
+            omega_k_t = (stat['n_k'] * stat['r_tilde_k_t']) / omega_denom
+            sum_omega += omega_k_t
+
+            for k, v in delta_k_t_clip.items():
+                global_update[k] += v.to(self.device) * omega_k_t
+
         # Apply update to global model
         current_params = self.global_model.state_dict()
         new_params = copy.deepcopy(current_params)
@@ -414,7 +497,13 @@ class CRD_server(Server):
                 new_params[k] = current_params[k].float() + global_update[k].float()
                 
         self.global_model.load_state_dict(new_params)
-        print(f"Aggregated {len(processed_updates)} updates with total weight {total_weight:.4f}")
+        mean_r_tilde = float(np.mean([stat['r_tilde_k_t'] for stat in client_stats]))
+        sum_r_tilde = float(np.sum([stat['r_tilde_k_t'] for stat in client_stats]))
+        print(
+            f"Aggregated {len(client_stats)} updates | "
+            f"tau_t={tau_t:.6f} | mean_r_tilde={mean_r_tilde:.6f} | "
+            f"sum_r_tilde={sum_r_tilde:.6f} | sum_omega={sum_omega:.6f}"
+        )
         
         # Update EMA model after aggregation
         self.update_ema_model()

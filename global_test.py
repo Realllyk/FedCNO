@@ -7,14 +7,37 @@ from pathlib import Path
 from sklearn.metrics import confusion_matrix
 
 
+def _move_to_device(obj, device):
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        return {k: _move_to_device(v, device) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_move_to_device(v, device) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_move_to_device(v, device) for v in obj)
+    return obj
+
+
+def _unpack_batch(batch):
+    if len(batch) == 3:
+        return batch[0], batch[1], batch[2]
+    if len(batch) == 4:
+        return batch[0], batch[1], batch[2]
+    raise ValueError(f"Unexpected batch length={len(batch)} in global_test")
+
+
 def global_test(model, dataloader, criterion, args, method, reduction='mean', run_timestamp=None, save_result=True, tag='test', epoch=None):
     all_predictions = []
     all_targets = []
     total_loss = 0
     model.eval()
     with torch.no_grad():
-        for x1, x2, y in dataloader:
-            x1, x2, y = x1.to(args.device), x2.to(args.device), y.to(args.device)
+        for batch in dataloader:
+            x1, x2, y = _unpack_batch(batch)
+            x1 = _move_to_device(x1, args.device)
+            x2 = _move_to_device(x2, args.device)
+            y = _move_to_device(y, args.device)
             y = y.flatten().long()
             outputs = model(x1, x2)
 

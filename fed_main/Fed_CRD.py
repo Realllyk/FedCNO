@@ -29,12 +29,18 @@ def train_crd_client(client_id, client, global_model, ema_model, criterion):
     # Important: Deepcopy to ensure independent training
     client.model = copy.deepcopy(global_model)
     
-    # Keep a copy of EMA model for consistency calculation (theta_ema^t)
-    # This provides a more stable anchor than the current global model
-    ema_model_copy = copy.deepcopy(ema_model)
-    ema_model_copy.eval()
-    for param in ema_model_copy.parameters():
-        param.requires_grad = False
+    # Select anchor model for q_k calculation.
+    # Default is global_model to align with the thesis algorithm description.
+    q_anchor = getattr(client.args, 'crd_q_anchor', 'global')
+    anchor_model_copy = None
+    if q_anchor == 'ema':
+        anchor_model_copy = copy.deepcopy(ema_model)
+        anchor_model_copy.eval()
+        for param in anchor_model_copy.parameters():
+            param.requires_grad = False
+        anchor_model = anchor_model_copy
+    else:
+        anchor_model = global_model
         
     # 2. Local Training
     # This updates client.model to theta_k^t
@@ -51,14 +57,15 @@ def train_crd_client(client_id, client, global_model, ema_model, criterion):
     for k in local_params.keys():
         delta[k] = local_params[k] - global_params[k]
         
-    # Calculate Reliability q_k^t using EMA model
-    q_k, num_samples = client.get_consistency_stats(ema_model_copy)
+    # Calculate Reliability q_k^t using selected anchor model
+    q_k, num_samples = client.get_consistency_stats(anchor_model)
     
     result = client.result
     loss = result.get('loss', 0.0)
     
     # Clean up
-    del ema_model_copy
+    if anchor_model_copy is not None:
+        del anchor_model_copy
     torch.cuda.empty_cache()
     gc.collect()
     

@@ -70,6 +70,21 @@ def read_pretrain_feature(names, feature_dir):
     return features
 
 
+def resolve_pretrain_feature_dir(data_dir, vul):
+    base_dir = os.path.join(data_dir, "pretrain_feature")
+    candidates = [
+        os.path.join(base_dir, vul),
+        os.path.join(base_dir, vul.lower()),
+        os.path.join(base_dir, vul.upper()),
+    ]
+
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+
+    return os.path.join(base_dir, vul)
+
+
 def reduced_name_labels(name_path, labels):
     reduced_names = list()
     reduced_labels = list()
@@ -204,7 +219,7 @@ def compute_global_clusters(all_name_paths, pre_feature_dir, n_clusters=20, seed
         with open(path, 'r') as f:
             for line in f:
                 unique_names.add(line.strip())
-    
+
     unique_names_list = list(unique_names)
     if not unique_names_list:
         return {}
@@ -219,20 +234,21 @@ def compute_global_clusters(all_name_paths, pre_feature_dir, n_clusters=20, seed
     
     # Global KMeans
     if torch.cuda.is_available():
-        print(f"  [Info] Using GPU (KMeansTorch) for global clustering.")
+        print("  [Info] Using GPU (KMeansTorch) for global clustering.")
         kmeans = KMeansTorch(n_clusters=n_clusters, seed=seed, device='cuda')
     else:
-        print(f"  [Info] Using CPU (sklearn.cluster.KMeans) for global clustering.")
+        print("  [Info] Using CPU (sklearn.cluster.KMeans) for global clustering.")
         kmeans = KMeans(n_clusters=n_clusters, random_state=seed, n_init=10)
-        
+
     cluster_ids = kmeans.fit_predict(Zs)
     
     # Create map
     cluster_map = {}
     for name, cid in zip(unique_names_list, cluster_ids):
         cluster_map[name] = cid
-        
+
     return cluster_map
+
 
 
 def coordinate_sys_noise_clusters(client_num, vul, noise_type, model_type='CBGRU', n_clusters=20, seed=42, data_dir='./data/'):
@@ -243,8 +259,8 @@ def coordinate_sys_noise_clusters(client_num, vul, noise_type, model_type='CBGRU
     3. 优化分配簇 ID，支持共享以保证噪声覆盖。
     
     Returns:
-        assigned_clusters_dict (dict): {client_id: [cluster_id, ...]}
-        global_cluster_map (dict): {contract_name: cluster_id}
+        assigned_clusters_dict: {client_id: [cluster_id, ...]}
+        global_cluster_map: {contract_name: cluster_id}
     """
     if noise_type != 'sys_noise':
         return None, None
@@ -259,9 +275,11 @@ def coordinate_sys_noise_clusters(client_num, vul, noise_type, model_type='CBGRU
             client_dir = os.path.join(data_dir, f"graduate_client_split/cbgru/{vul}/client_{i}/")
         elif model_type == "CGE":
             client_dir = os.path.join(data_dir, f"graduate_client_split/cge/{vul}/client_{i}/")
+        elif model_type == "MANDO":
+            client_dir = os.path.join(data_dir, f"graduate_client_split/mando/{vul}/client_{i}/")
         else:
             client_dir = os.path.join(data_dir, f"graduate_client_split/{vul}/client_{i}/")
-            
+
         names_path = os.path.join(client_dir, "contract_name_train.txt")
         all_name_paths.append(names_path)
         
@@ -273,7 +291,6 @@ def coordinate_sys_noise_clusters(client_num, vul, noise_type, model_type='CBGRU
     
     # 2.1 统计分布：计算每个客户端在每个全局簇中的样本数量
     client_cluster_counts = {client_id: {c: 0 for c in range(n_clusters)} for client_id in range(client_num)}
-    
     for client_id in range(client_num):
         names_path = all_name_paths[client_id]
         if os.path.exists(names_path):
@@ -290,9 +307,7 @@ def coordinate_sys_noise_clusters(client_num, vul, noise_type, model_type='CBGRU
         for c_id, count in client_cluster_counts[client_id].items():
             if count > 0: # 只要有样本就可以作为候选
                 candidate_clusters[client_id].append((c_id, count))
-        # 按样本数从大到小排序，优先分配样本多的簇
         candidate_clusters[client_id].sort(key=lambda x: x[1], reverse=True)
-        # 只保留簇ID
         candidate_clusters[client_id] = [x[0] for x in candidate_clusters[client_id]]
 
     # 2.3 贪心分配
@@ -324,7 +339,7 @@ def coordinate_sys_noise_clusters(client_num, vul, noise_type, model_type='CBGRU
                 if c_id not in assigned_clusters_dict[client_id]:
                     assigned_clusters_dict[client_id].append(c_id)
                     needed -= 1
-    
+
     print(f"Systemic Noise Cluster Assignment (Optimized): {assigned_clusters_dict}")
     # 打印一下实际分配的覆盖情况
     cluster_usage = {c: 0 for c in range(n_clusters)}
@@ -332,8 +347,9 @@ def coordinate_sys_noise_clusters(client_num, vul, noise_type, model_type='CBGRU
         for c in c_list:
             cluster_usage[c] += 1
     print(f"Cluster Usage Counts: {cluster_usage}")
-    
+
     return assigned_clusters_dict, global_cluster_map
+
 
 
 def gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_rate, n_clusters=20, seed=42, assigned_cluster_indices=None, global_cluster_map=None):
@@ -353,11 +369,11 @@ def gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_
         lines = f.readlines()
         for line in lines:
             names.append(line.strip())
-    
+
     with open(labels_path, 'rb') as file:
         df = pd.read_csv(labels_path, header=None)
         labels = df.iloc[:, 0].values
-    
+
     name_set = set()
     unique_names = []
     unique_labels = []
@@ -434,11 +450,9 @@ def gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_
         if count0 >= count1:
             maj_label = 0
             min_label = 1
-            majority_count = count0
         else:
             maj_label = 1
             min_label = 0
-            majority_count = count1
             
         # 找出该簇中属于多数类的样本下标
         # 这些样本是“候选翻转对象” (Source: Majority -> Target: Minority)
@@ -470,10 +484,10 @@ def gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_
     for info in flip_candidates_info:
         if current_count >= m_target:
             break
-            
+
         c_idxs = info['candidate_indices']
         needed = m_target - current_count
-        
+
         if len(c_idxs) <= needed:
             # 当前簇全取
             for idx in c_idxs:
@@ -501,9 +515,8 @@ def gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_
         # 在目标簇范围内寻找所有未被选中的样本
         # (限制在 assigned_cluster_indices 内，如果没有指定则全量)
         available_indices = []
-        
+
         if assigned_cluster_indices is not None:
-            # 1. 尝试从分配的簇中找
             valid_clusters = set([c % n_clusters for c in assigned_cluster_indices])
             for idx, c_id in enumerate(cluster_ids):
                 if c_id in valid_clusters and idx not in chosen_indices:
@@ -521,18 +534,17 @@ def gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_
             for idx in range(n):
                 if idx not in chosen_indices:
                     available_indices.append(idx)
-            
+
         shortage = m_target - current_count
         if len(available_indices) < shortage:
             print(f"[Error] 即使启用 Fallback，样本总数仍不足以满足噪声率！(可用: {len(available_indices)}, 需要: {shortage})")
             shortage = len(available_indices) # 尽力而为
             
         if shortage > 0:
-            rng = np.random.RandomState(seed + 999) # 全局 fallback 随机种子
+            rng = np.random.RandomState(seed + 999)
             fallback_indices = rng.choice(available_indices, size=shortage, replace=False)
-            
+
             for idx in fallback_indices:
-                # 翻转逻辑：0->1, 1->0
                 original_label = yk[idx]
                 target_label = 1 - original_label
                 c_id = cluster_ids[idx]
@@ -542,13 +554,13 @@ def gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_
 
     # 6. 执行改标
     noisy_labels = yk.copy()
-    flip_record = [] # 用于调试
-    
+    flip_record = []
+
     for item in chosen_candidates:
         idx = item['index']
         target = item['target_label']
         original = noisy_labels[idx]
-        
+
         noisy_labels[idx] = target
         flip_record.append({
             'index': idx,
@@ -562,8 +574,8 @@ def gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_
     print(f"  Noise Rate: {noise_rate}, Target Flips: {m_target}, Actual Flips: {len(flip_record)}")
     print(f"  Clusters used: {len(selected_clusters)} (IDs: {list(selected_clusters)})")
     if assigned_cluster_indices is not None:
-         print(f"  (Assigned Pool: {assigned_cluster_indices})")
-    
+        print(f"  (Assigned Pool: {assigned_cluster_indices})")
+
     flip_0_to_1 = sum(1 for x in flip_record if x['original'] == 0 and x['new'] == 1)
     flip_1_to_0 = sum(1 for x in flip_record if x['original'] == 1 and x['new'] == 0)
     print(f"  Flips 0->1: {flip_0_to_1}, Flips 1->0: {flip_1_to_0}")
@@ -573,12 +585,13 @@ def gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_
     name_label_map = dict()
     for i in range(len(unique_names)):
         name_label_map[unique_names[i]] = noisy_labels[i]
-    
+
     final_noise_labels = []
     for name in names:
         final_noise_labels.append(name_label_map[name])
-    
+
     return final_noise_labels
+
 
 
 def get_pattern_feature(vul, graph_path):
@@ -679,3 +692,4 @@ def get_graph_feature(vul, noise_type, graph_path, noise_rate=0.05):
     label_by_experts_valid = label_by_experts_valid.reshape(-1, 1)
 
     return graph_feature_train, graph_feature_test, label_by_experts_train, label_by_experts_valid, pos_weight
+

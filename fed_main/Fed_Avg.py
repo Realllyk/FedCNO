@@ -11,8 +11,7 @@ import torch.nn.functional as F
 from options import parse_args
 from data_processing.dataloader_manager import gen_cbgru_dl, gen_cbgru_valid_dl, gen_client_ds, gen_valid_dl
 from data_processing.preprocessing import coordinate_sys_noise_clusters
-from models.ClassiFilerNet import ClassiFilerNet
-from models.CGE_Variants import CGEVariant
+from models.model_factory import build_model
 from trainers.server import Server
 from trainers.client import Fed_Avg_client
 from global_test import global_test
@@ -29,7 +28,7 @@ def train_one_client(client_id, args, global_model, criterion, dataset):
                         None,
                         dataset)
     # print(f"Create Client {client_id}!")
-    # 深拷贝全局模型，确保线程安全，每个客户端拥有独立的模型副本
+    # print(f"Create Client {client_id}!")
     client.model = copy.deepcopy(global_model)
     client.train()
     
@@ -49,6 +48,8 @@ def train_one_client(client_id, args, global_model, criterion, dataset):
 
 if __name__ == '__main__':
     args = parse_args()
+    if args.model_type == "MANDO" and args.vul != "tod":
+        raise ValueError("MANDO only supports --vul tod in this project.")
     INPUT_SIZE, TIME_STAMP = 100, 300
 
     # dataloader_dict = dict()
@@ -67,7 +68,7 @@ if __name__ == '__main__':
         torch.cuda.manual_seed_all(args.seed)
 
     # -------------------------------------------------------------------------
-    # 系统性噪声协调 (Systemic Noise Coordination)
+    # -------------------------------------------------------------------------
     # -------------------------------------------------------------------------
     assigned_clusters_dict, global_cluster_map = coordinate_sys_noise_clusters(
         args.client_num, 
@@ -107,6 +108,8 @@ if __name__ == '__main__':
                 client_dir = os.path.join(args.data_dir, f"graduate_client_split/cbgru/{args.vul}/client_{i}/")
             elif args.model_type == 'CGE':
                 client_dir = os.path.join(args.data_dir, f"graduate_client_split/cge/{args.vul}/client_{i}/")
+            elif args.model_type == 'MANDO':
+                client_dir = os.path.join(args.data_dir, f"graduate_client_split/mando/{args.vul}/client_{i}/")
             else:
                 client_dir = os.path.join(args.data_dir, f"graduate_client_split/{args.vul}/client_{i}/")
             labels_path = os.path.join(client_dir, f"label_train.csv")
@@ -120,10 +123,7 @@ if __name__ == '__main__':
 
     criterion = nn.CrossEntropyLoss()
 
-    if args.model_type == "CBGRU":
-        global_model = ClassiFilerNet(INPUT_SIZE, TIME_STAMP)
-    elif args.model_type == "CGE":
-        global_model = CGEVariant()
+    global_model = build_model(args, INPUT_SIZE, TIME_STAMP)
     global_model = global_model.to(args.device)
 
     server = Server(

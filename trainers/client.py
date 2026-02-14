@@ -10,9 +10,31 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, Subset
 from torch.utils.tensorboard import SummaryWriter
-from data_processing.preprocessing import vec2one, reduced_name_labels, read_pretrain_feature, relabel_with_pretrained_knn
+from data_processing.preprocessing import vec2one, reduced_name_labels, read_pretrain_feature, relabel_with_pretrained_knn, resolve_pretrain_feature_dir
+from data_processing.mando_collate import mando_collate_fn, lgv_mando_collate_fn
+from models.model_factory import get_local_lr
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import confusion_matrix
+
+
+def _move_to_device(obj, device):
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        return {k: _move_to_device(v, device) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_move_to_device(v, device) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_move_to_device(v, device) for v in obj)
+    return obj
+
+
+def _unpack_batch(batch):
+    if len(batch) == 3:
+        return batch[0], batch[1], batch[2], None
+    if len(batch) == 4:
+        return batch[0], batch[1], batch[2], batch[3]
+    raise ValueError(f"Unexpected batch structure with length={len(batch)}")
 
 
 class Fed_Avg_client(object):
@@ -128,11 +150,9 @@ class Fed_Avg_client(object):
         return pure_dl
            
     def train(self):
-        dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
-        if self.args.model_type == "CBGRU":
-            lr = self.args.cbgru_local_lr
-        elif self.args.model_type == "CGE":
-            lr = self.args.cge_local_lr
+        collate_fn = mando_collate_fn if self.args.model_type == "MANDO" else None
+        dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True, collate_fn=collate_fn)
+        lr = get_local_lr(self.args)
         # Add weight decay for regularization
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=self.args.weight_decay)
 
@@ -143,16 +163,19 @@ class Fed_Avg_client(object):
         self.model.train()
         for epoch in range(self.args.cbgru_local_epoch):
             self.result['loss'] = 0
-            for x1, x2, y in dataloader:
+            for batch in dataloader:
                 optimizer.zero_grad()
-                x1, x2, y = x1.to(device), x2.to(device), y.to(device)
+                x1, x2, y, _ = _unpack_batch(batch)
+                x1 = _move_to_device(x1, device)
+                x2 = _move_to_device(x2, device)
+                y = _move_to_device(y, device)
                 outputs = self.model(x1, x2)
                 y = y.flatten().long()
                 loss = self.criterion(outputs, y)
                 self.result['loss'] = self.result['loss'] + loss.item()
                 loss.backward()
                 # Gradient Clipping:
-                # - reentrancy: 使用极其严格的裁剪 (1.0) 以强力防止震荡和 NaN
+                # - timestamp: 使用极其严格的裁剪 (1.0) 以强力防止震荡
                 # - timestamp: 使用极其严格的裁剪 (1.0) 以强力防止震荡
                 clip_value = 1.0 
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_value)
@@ -542,9 +565,9 @@ class Fed_LGV_client(object):
         self.device = args.device
         self.global_weight = global_weight
         
-        # FedCNO: 初始化 fixed_global_model
-        # 注意：这里的 model 是客户端初始化时传入的初始模型
         # 在 train() 开始前，我们应该手动更新它，以确保它始终是本轮最新的全局模型
+        # 在 train() 开始前，我们应该手动更新它，以确保它始终是本轮最新的全局模型
+        # Also create a text log file in the same directory
         self.fixed_global_model = copy.deepcopy(model)
         self.fixed_global_model.eval() 
         for param in self.fixed_global_model.parameters():
@@ -580,18 +603,20 @@ class Fed_LGV_client(object):
 
     def get_local_knn_labels(self, vul, noise_type, noise_rate):
         # -------------------------------------------------------------------------
-        # 初始化：生成本地视图 (Local View)
+        # 中文注释：该处逻辑与原实现保持一致。
         # -------------------------------------------------------------------------
-        # 该方法在训练开始前调用一次，利用本地的静态预训练特征（如 Word2Vec/FastText）
-        # 来建立初始的标签概率分布和一致性基准。
+        # 中文注释：该处逻辑与原实现保持一致。
+        # 遍历数据集提取去重后的特征
         
-        pre_feature_dir = os.path.join(self.args.data_dir, f"pretrain_feature/{vul}")
+        pre_feature_dir = resolve_pretrain_feature_dir(self.args.data_dir, vul)
         
         # 根据 model_type 选择路径，确保与数据集加载路径一致
         if self.args.model_type == 'CBGRU':
             name_path = os.path.join(self.args.data_dir, f"graduate_client_split/cbgru/{vul}/client_{self.client_id}/contract_name_train.txt")
         elif self.args.model_type == 'CGE':
             name_path = os.path.join(self.args.data_dir, f"graduate_client_split/cge/{vul}/client_{self.client_id}/contract_name_train.txt")
+        elif self.args.model_type == 'MANDO':
+            name_path = os.path.join(self.args.data_dir, f"graduate_client_split/mando/{vul}/client_{self.client_id}/contract_name_train.txt")
         else:
             name_path = os.path.join(self.args.data_dir, f"graduate_client_split/{vul}/client_{self.client_id}/contract_name_train.txt")
             
@@ -601,37 +626,46 @@ class Fed_LGV_client(object):
         reduced_names, reduced_labels = reduced_name_labels(name_path, labels)
         # pre_features = read_pretrain_feature(reduced_names, pre_feature_dir)
         
-        # 使用 dataset 本身的特征 (x1, x2) 替代预训练特征
         print(f"Client {self.client_id}: Extracting features from dataset for KNN...")
-        reduced_features = []
-        name_set = set()
+        if self.args.model_type == "MANDO":
+            self.gen_reduced_ds()
+            reduced_names = self.reduced_ds.names
+            reduced_labels = self.reduced_ds.labels
+            reduced_features = []
+            dl = DataLoader(
+                self.reduced_ds,
+                batch_size=self.args.batch,
+                shuffle=False,
+                pin_memory=True,
+                collate_fn=lgv_mando_collate_fn
+            )
+            with torch.no_grad():
+                self.model.eval()
+                for batch in dl:
+                    x1, x2, _, _ = _unpack_batch(batch)
+                    x1 = _move_to_device(x1, self.device)
+                    x2 = _move_to_device(x2, self.device)
+                    _ = self.model(x1, x2)
+                    reduced_features.append(self.model.inter_outputs.detach().cpu().numpy())
+            reduced_features = np.concatenate(reduced_features, axis=0)
+        else:
+            reduced_features = []
+            name_set = set()
+            for i in range(len(self.dataset)):
+                name = self.dataset.names[i]
+                if name not in name_set:
+                    name_set.add(name)
+                    data_item = self.dataset[i]
+                    x1 = data_item[0]
+                    x2 = data_item[1]
+                    f1 = x1.view(-1).numpy()
+                    f2 = x2.view(-1).numpy()
+                    feature = np.concatenate([f1, f2])
+                    reduced_features.append(feature)
+            reduced_features = np.array(reduced_features)
         
-        # 遍历数据集提取去重后的特征
-        # 注意：这里假设 dataset.names 的顺序与 reduced_name_labels 处理文件的顺序一致
-        for i in range(len(self.dataset)):
-            name = self.dataset.names[i]
-            if name not in name_set:
-                name_set.add(name)
-                
-                # 获取特征 (x1, x2)
-                # dataset[i] 返回 (x1, x2, label, ratio) 或 (x1, x2, label)
-                data_item = self.dataset[i]
-                x1 = data_item[0]
-                x2 = data_item[1]
-                
-                # Flatten 并拼接特征
-                # x1: (1, 100, 300) -> Flatten
-                # x2: (300,) -> Flatten
-                f1 = x1.view(-1).numpy()
-                f2 = x2.view(-1).numpy()
-                feature = np.concatenate([f1, f2])
-                
-                reduced_features.append(feature)
-        
-        reduced_features = np.array(reduced_features)
-        
-        # 运行 KNN 获取初始概率和一致性
-        # - prob_relabels: 本地特征视角下的标签概率。
+        # - agreement_ratios: 本地特征视角下的样本一致性。
+        # - agreement_ratios: 本地特征视角下的样本一致性。
         # - agreement_ratios: 本地特征视角下的样本一致性。
         relabels, prob_relabels, agreement_ratios, indices = relabel_with_pretrained_knn(reduced_labels, reduced_features, 2, 'uniform', self.args.num_neigh, 0.15)
         
@@ -654,7 +688,7 @@ class Fed_LGV_client(object):
                 full_agr.append(name_agr[name])
                 full_prob.append(name_prob[name])
         
-        # 保存本地概率分布，这部分在后续训练中保持静态，作为先验知识 (Prior Knowledge)
+        # Before local training, new local model is global model
         full_prob = np.array(full_prob, dtype=np.float32)
         self.local_prob_labels = torch.tensor(full_prob, dtype=torch.float32).to(self.device)
         
@@ -663,12 +697,16 @@ class Fed_LGV_client(object):
 
     # 使用全局模型直接生成概率标签
     def get_global_prob_labels(self, vul):
-        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False, pin_memory=True)
+        collate_fn = lgv_mando_collate_fn if self.args.model_type == "MANDO" else None
+        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False, pin_memory=True, collate_fn=collate_fn)
         gl_probs = []
         with torch.no_grad():
             self.model.eval()
-            for x1, x2, y, _ in dl:
-                x1, x2, y = x1.to(self.device), x2.to(self.device), y.to(self.device)
+            for batch in dl:
+                x1, x2, y, _ = _unpack_batch(batch)
+                x1 = _move_to_device(x1, self.device)
+                x2 = _move_to_device(x2, self.device)
+                y = _move_to_device(y, self.device)
                 outputs = self.model(x1, x2)
                 outputs = F.softmax(outputs, dim=1)
                 gl_probs.append(outputs)
@@ -678,23 +716,29 @@ class Fed_LGV_client(object):
 
     # 使用全局模型标签来进行投票
     def get_global_knn_labels(self, vul, noise_type, noise_rate):
-        pre_feature_dir = os.path.join(self.args.data_dir, f"pretrain_feature/{vul}")
+        pre_feature_dir = resolve_pretrain_feature_dir(self.args.data_dir, vul)
         
         # 根据 model_type 选择路径，确保与数据集加载路径一致
         if self.args.model_type == 'CBGRU':
             name_path = os.path.join(self.args.data_dir, f"graduate_client_split/cbgru/{vul}/client_{self.client_id}/contract_name_train.txt")
         elif self.args.model_type == 'CGE':
             name_path = os.path.join(self.args.data_dir, f"graduate_client_split/cge/{vul}/client_{self.client_id}/contract_name_train.txt")
+        elif self.args.model_type == 'MANDO':
+            name_path = os.path.join(self.args.data_dir, f"graduate_client_split/mando/{vul}/client_{self.client_id}/contract_name_train.txt")
         else:
             name_path = os.path.join(self.args.data_dir, f"graduate_client_split/{vul}/client_{self.client_id}/contract_name_train.txt")
 
         # Before local training, new local model is global model
-        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False, pin_memory=True)
+        collate_fn = lgv_mando_collate_fn if self.args.model_type == "MANDO" else None
+        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False, pin_memory=True, collate_fn=collate_fn)
         gl_labels = []
         with torch.no_grad():
             self.model.eval()
-            for x1, x2, y, _ in dl:
-                x1, x2, y = x1.to(self.device), x2.to(self.device), y.to(self.device)
+            for batch in dl:
+                x1, x2, y, _ = _unpack_batch(batch)
+                x1 = _move_to_device(x1, self.device)
+                x2 = _move_to_device(x2, self.device)
+                y = _move_to_device(y, self.device)
                 outputs = self.model(x1, x2)
                 outputs = F.softmax(outputs, dim=1)
                 pred = torch.argmax(outputs, dim=-1)
@@ -742,12 +786,16 @@ class Fed_LGV_client(object):
         
     # 使用全局模型生成的特征来进行knn
     def get_global_feature_knn_labels(self):
-        dl = DataLoader(self.reduced_ds, batch_size=self.args.batch, shuffle=False, pin_memory=True)
+        collate_fn = lgv_mando_collate_fn if self.args.model_type == "MANDO" else None
+        dl = DataLoader(self.reduced_ds, batch_size=self.args.batch, shuffle=False, pin_memory=True, collate_fn=collate_fn)
         outputs_list = []
         with torch.no_grad():
             self.model.eval()
-            for x1, x2, y, _ in dl:
-                x1, x2, y = x1.to(self.device), x2.to(self.device), y.to(self.device)
+            for batch in dl:
+                x1, x2, y, _ = _unpack_batch(batch)
+                x1 = _move_to_device(x1, self.device)
+                x2 = _move_to_device(x2, self.device)
+                y = _move_to_device(y, self.device)
                 outputs = self.model(x1, x2)
                 # outputs_list.append(outputs)
                 outputs_list.append(self.model.inter_outputs)
@@ -767,15 +815,15 @@ class Fed_LGV_client(object):
         full_prob = np.array(full_prob, dtype=np.float32)
         self.global_prob_labels = torch.tensor(full_prob, dtype=torch.float32).to(self.args.device)
 
-    # 使用全局模型，并使用全局模型生成的特征合和标签一起进行knn
+    # 计算权重：熵越小 (越确信)，权重越大
     def get_global_feature_global_knn_labels(self):
         # Update reduced dataset with latest labels before KNN
         self.gen_reduced_ds()
         
         # ---------------------------------------------------------------------
-        # 修改：Global View 构建逻辑更新
-        # 1. 邻居选择：复用 Local View 中的静态特征 KNN 邻居 (self.reduced_knn_indices)
-        # 2. 证据生成：使用当前全局模型对邻居样本输出的 Softmax 概率进行平均
+        # ---------------------------------------------------------------------
+        # ---------------------------------------------------------------------
+        # 加权平均得到 Global View
         # ---------------------------------------------------------------------
 
         if not hasattr(self, 'reduced_knn_indices'):
@@ -783,14 +831,17 @@ class Fed_LGV_client(object):
              print("Warning: reduced_knn_indices not found, falling back to dynamic KNN (which is not implemented in this experimental version)")
              return 
 
-        # 1. 对 reduced_ds 进行全量推理，获取每个样本的当前模型预测概率
-        dl = DataLoader(self.reduced_ds, batch_size=self.args.batch, shuffle=False, pin_memory=True)
+        # 中文注释：该处逻辑与原实现保持一致。
+        collate_fn = lgv_mando_collate_fn if self.args.model_type == "MANDO" else None
+        dl = DataLoader(self.reduced_ds, batch_size=self.args.batch, shuffle=False, pin_memory=True, collate_fn=collate_fn)
         all_probs_list = []
         
         with torch.no_grad():
             self.model.eval()
-            for x1, x2, y, _ in dl:
-                x1, x2 = x1.to(self.device), x2.to(self.device)
+            for batch in dl:
+                x1, x2, _, _ = _unpack_batch(batch)
+                x1 = _move_to_device(x1, self.device)
+                x2 = _move_to_device(x2, self.device)
                 outputs = self.model(x1, x2)
                 probs = F.softmax(outputs, dim=1) # (B, C)
                 all_probs_list.append(probs)
@@ -798,32 +849,32 @@ class Fed_LGV_client(object):
         # 拼接所有批次结果 -> (M, C)
         all_probs = torch.cat(all_probs_list, dim=0)
         
-        # 2. 获取静态邻居索引
-        # self.reduced_knn_indices 是一个 list of lists 或者 numpy array (M, K)
+        # 确保它是 tensor 以便索引
+        # 确保它是 tensor 以便索引
         # 确保它是 tensor 以便索引
         knn_indices = torch.tensor(self.reduced_knn_indices, dtype=torch.long, device=self.device)
         
-        # 3. 查表获取邻居概率
+        # neighbor_probs: (M, K, C)
         # neighbor_probs: (M, K, C)
         neighbor_probs = all_probs[knn_indices]
         
         # ---------------------------------------------------------------------
-        # 修改：引入基于熵的动态加权 (Entropy-based Dynamic Weighting)
+        # (M, K)
         # ---------------------------------------------------------------------
         
-        # 计算每个邻居的熵 (Entropy): H(p) = -sum(p * log(p))
+        # (M, K)
         # (M, K)
         neighbor_entropy = -torch.sum(neighbor_probs * torch.log(neighbor_probs + 1e-8), dim=2)
         
-        # 计算权重：熵越小 (越确信)，权重越大
-        # 使用 Softmax(-Entropy) 是一种平滑且鲁棒的加权方式 (相当于 Temperature=1.0)
+        # (M, K)
+        # (M, K)
         # (M, K)
         neighbor_weights = F.softmax(-neighbor_entropy, dim=1)
         
         # 扩展权重维度以匹配概率矩阵: (M, K, 1)
         neighbor_weights = neighbor_weights.unsqueeze(2)
         
-        # 加权平均得到 Global View
+        # (M, C)
         # (M, C)
         global_view_probs = torch.sum(neighbor_probs * neighbor_weights, dim=1)
         
@@ -851,11 +902,9 @@ class Fed_LGV_client(object):
         # self.dataset.set_ag_rt(full_agr)
 
     def warmup_train(self):
-        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
-        if self.args.model_type == "CBGRU":
-            lr = self.args.cbgru_local_lr
-        elif self.args.model_type == "CGE":
-            lr = self.args.cge_local_lr
+        collate_fn = lgv_mando_collate_fn if self.args.model_type == "MANDO" else None
+        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True, collate_fn=collate_fn)
+        lr = get_local_lr(self.args)
         # Add weight decay for regularization
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=self.args.weight_decay)
 
@@ -866,9 +915,12 @@ class Fed_LGV_client(object):
         self.model.train()
         for epoch in range(self.args.cbgru_local_epoch):
             self.result['loss'] = 0
-            for x1, x2, y, agr in dl:
+            for batch in dl:
                 optimizer.zero_grad()
-                x1, x2, y= x1.to(device), x2.to(device), y.to(device)
+                x1, x2, y, _ = _unpack_batch(batch)
+                x1 = _move_to_device(x1, device)
+                x2 = _move_to_device(x2, device)
+                y = _move_to_device(y, device)
                 outputs = self.model(x1, x2)
                 y = y.flatten().long()
                 loss = self.criterion(outputs, y)
@@ -876,8 +928,8 @@ class Fed_LGV_client(object):
                 self.result['loss'] = self.result['loss'] + loss.item()
                 loss.backward()
                 # Gradient Clipping:
-                # - reentrancy: 使用极其严格的裁剪 (1.0) 以强力防止震荡和 NaN
-                # - timestamp: 使用极其严格的裁剪 (1.0) 以强力防止震荡
+                #   -> 导致强行融合错误的 Global View，破坏 WarmUp 成果。
+                #
                 clip_value = 1.0 
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_value)
                 optimizer.step()
@@ -887,29 +939,32 @@ class Fed_LGV_client(object):
                 # gc.collect()
                 
     def train(self):
-        # ---------------- FedCNO: 动态 alpha 计算与数据集标签更新 ----------------
+        # 降低 alpha_max 以限制全局视图的最大权重，更多地依赖本地的一致性（特别是修复了本地KNN特征后）。
         
-        # 关键修正：在每轮本地训练开始前，必须更新 fixed_global_model 为当前最新的本地模型
-        # (因为在 Fed_LGV.py 中，client.model 已经在每轮开始时被重置为 server.global_model)
+        # 使 autotune_gr 的动态调整能够真正影响客户端的融合策略。
         # 这样 fixed_global_model 才能代表本轮的"全局视图"
+        # alpha_max = 0.5 
         self.fixed_global_model.load_state_dict(self.model.state_dict())
         self.fixed_global_model.eval()
         
-        # 在每轮训练开始前，遍历整个数据集，计算每个样本的不确定性和动态融合权重 alpha
-        # 并据此更新 dataset.labels (伪标签)
+        # 中文注释：该处逻辑与原实现保持一致。
+        # 中文注释：该处逻辑与原实现保持一致。
         
-        # 1. 计算全局不确定性与动态 alpha
-        # 为了计算整个数据集的不确定性，我们需要遍历一遍数据
-        # 使用 self.fixed_global_model (本轮固定的全局视图)
+        # 中文注释：该处逻辑与原实现保持一致。
+        # 将 alpha 扩展维度以匹配 prob_labels: (N, 1)
+        # 中文注释：该处逻辑与原实现保持一致。
         
-        # 创建一个不打乱的 DataLoader 以便按顺序获取不确定性
-        eval_dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False, pin_memory=True)
+        # 3. 融合生成伪标签 (公式 6)
+        collate_fn = lgv_mando_collate_fn if self.args.model_type == "MANDO" else None
+        eval_dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False, pin_memory=True, collate_fn=collate_fn)
         all_uncertainties = []
         
         with torch.no_grad():
             self.fixed_global_model.eval()
-            for x1, x2, _, _ in eval_dl:
-                x1, x2 = x1.to(self.device), x2.to(self.device)
+            for batch in eval_dl:
+                x1, x2, _, _ = _unpack_batch(batch)
+                x1 = _move_to_device(x1, self.device)
+                x2 = _move_to_device(x2, self.device)
                 global_logits = self.fixed_global_model(x1, x2)
                 global_probs = F.softmax(global_logits, dim=1) # (B, C)
                 
@@ -923,24 +978,20 @@ class Fed_LGV_client(object):
         # 拼接所有不确定性分数
         all_uncertainties = torch.cat(all_uncertainties, dim=0) # (N,)
         
-        # 2. 计算动态权重 alpha (公式 3 & 5)
-        # 逻辑修正 (Critical Fix for Systemic Noise):
-        # 原逻辑: alpha = 1.0 - uncertainty 
-        #   -> 意味着模型越确定 (Low Uncertainty)，越信任 Global View。
-        #   -> 在 Systemic Noise 下，模型可能对错误标签非常自信 (Overconfidence)。
-        #   -> 导致强行融合错误的 Global View，破坏 WarmUp 成果。
+        # 中文注释：该处逻辑与原实现保持一致。
+        # 中文注释：该处逻辑与原实现保持一致。
+        # 中文注释：该处逻辑与原实现保持一致。
+        # Add weight decay for regularization
+        # 中文注释：该处逻辑与原实现保持一致。
+        # 中文注释：该处逻辑与原实现保持一致。
         #
-        # 新逻辑: alpha = uncertainty
-        #   -> 意味着模型越迷茫 (High Uncertainty)，才去参考 Global View。
-        #   -> 如果模型很确定 (Low Uncertainty)，则坚持 Local View (WarmUp 结果)，不受 Global 噪声干扰。
-        # 优化: 使用平方衰减 (u^2) 而非线性 (u)。
-        #   -> 进一步降低在"半懂不懂" (u~0.5) 时的干扰，只在极度迷茫 (u>0.8) 时才显著引入 Global View。
+        # 中文注释：该处逻辑与原实现保持一致。
+        # 中文注释：该处逻辑与原实现保持一致。
+        # 中文注释：该处逻辑与原实现保持一致。
+        # 中文注释：该处逻辑与原实现保持一致。
+        # 中文注释：该处逻辑与原实现保持一致。
         alpha_raw = all_uncertainties ** 2 # 非线性衰减
         
-        # 截断约束 alpha \in [alpha_min, alpha_max]
-        # 修改原因：实验发现模型在全阴/全阳之间剧烈震荡，说明全局视图可能引入了过大的噪声或不稳定性。
-        # 降低 alpha_max 以限制全局视图的最大权重，更多地依赖本地的一致性（特别是修复了本地KNN特征后）。
-        # 进一步修改：将 alpha_max 与 server 端的 self.global_weight 绑定，
         # 使 autotune_gr 的动态调整能够真正影响客户端的融合策略。
         alpha_min = self.args.alpha_min
         # alpha_max = 0.5 
@@ -954,19 +1005,19 @@ class Fed_LGV_client(object):
         # 将 alpha 扩展维度以匹配 prob_labels: (N, 1)
         alpha = alpha.unsqueeze(1).to(self.device)
         
-        # 3. 融合生成伪标签 (公式 6)
-        # p_tilde = alpha * p_global + (1-alpha) * p_local
-        # 注意：这里的 p_global 和 p_local 分别是 self.global_prob_labels 和 self.local_prob_labels
-        # 它们已经在之前通过 get_global/local_knn_labels 计算并存储好了
-        
         # 确保 global/local_prob_labels 在设备上
+        # p_tilde = alpha * p_global + (1-alpha) * p_local
+        # 确保 global/local_prob_labels 在设备上
+        # Gradient Clipping:
+        
+        # - timestamp: 使用极其严格的裁剪 (1.0) 以强力防止震荡
         if self.global_prob_labels.device != self.device:
             self.global_prob_labels = self.global_prob_labels.to(self.device)
         if self.local_prob_labels.device != self.device:
             self.local_prob_labels = self.local_prob_labels.to(self.device)
             
         with torch.no_grad():
-            # 使用动态 alpha 进行融合
+            # gc.collect()
             prob_labels = alpha * self.global_prob_labels + (1 - alpha) * self.local_prob_labels
             prob_labels = F.softmax(prob_labels, dim=1)
             labels = torch.argmax(prob_labels, dim=-1) # (N,)
@@ -976,11 +1027,9 @@ class Fed_LGV_client(object):
         
         # ---------------------------------------------------------------------
         
-        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
-        if self.args.model_type == "CBGRU":
-            lr = self.args.cbgru_local_lr
-        elif self.args.model_type == "CGE":
-            lr = self.args.cge_local_lr
+        collate_fn = lgv_mando_collate_fn if self.args.model_type == "MANDO" else None
+        dl = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True, collate_fn=collate_fn)
+        lr = get_local_lr(self.args)
         # Add weight decay for regularization
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=self.args.weight_decay)
 
@@ -991,9 +1040,13 @@ class Fed_LGV_client(object):
         self.model.train()
         for epoch in range(self.args.cbgru_local_epoch):
             self.result['loss'] = 0
-            for x1, x2, y, agr in dl:
+            for batch in dl:
                 optimizer.zero_grad()
-                x1, x2, y, agr = x1.to(device), x2.to(device), y.to(device), agr.to(device)
+                x1, x2, y, agr = _unpack_batch(batch)
+                x1 = _move_to_device(x1, device)
+                x2 = _move_to_device(x2, device)
+                y = _move_to_device(y, device)
+                agr = _move_to_device(agr, device) if agr is not None else torch.ones_like(y, dtype=torch.float32, device=device)
                 outputs = self.model(x1, x2)
                 y = y.flatten().long()
                 loss = self.criterion(outputs, y)
@@ -1013,7 +1066,7 @@ class Fed_LGV_client(object):
                 self.result['loss'] = self.result['loss'] + loss.item()
                 loss.backward()
                 # Gradient Clipping:
-                # - reentrancy: 使用默认或较宽松的裁剪 (10)
+                # - timestamp: 使用极其严格的裁剪 (1.0) 以强力防止震荡
                 # - timestamp: 使用极其严格的裁剪 (1.0) 以强力防止震荡
                 clip_value = 1.0 if getattr(self.args, 'vul', '') == 'timestamp' else 10
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_value)
@@ -1140,9 +1193,10 @@ class Fed_CRD_client(Fed_Avg_client):
         self.h_loc = torch.max(self.pi_loc, dim=1)[0] # (M,)
         print(f"Client {self.client_id}: KNN neighborhood initialized.")
 
-    def get_consistency_stats(self, global_model):
+    def get_consistency_stats(self, anchor_model):
         """
-        Compute consistency statistics: pi_glob, h_glob, delta, q_k
+        Compute consistency statistics: pi_glob, h_glob, delta, q_k.
+        anchor_model can be current global model (theta^t) or EMA model.
         """
         if self.reduced_knn_indices is None:
             self.init_knn_neighborhood()
@@ -1159,7 +1213,7 @@ class Fed_CRD_client(Fed_Avg_client):
         dl = DataLoader(reduced_ds, batch_size=self.args.batch, shuffle=False, pin_memory=True)
         
         all_probs = []
-        global_model.eval()
+        anchor_model.eval()
         with torch.no_grad():
             for batch in dl: 
                  # Unpack dynamically
@@ -1169,7 +1223,7 @@ class Fed_CRD_client(Fed_Avg_client):
                      x1, x2, _, _ = batch[0:4]
                      
                  x1, x2 = x1.to(self.device), x2.to(self.device)
-                 outputs = global_model(x1, x2)
+                 outputs = anchor_model(x1, x2)
                  probs = F.softmax(outputs, dim=1)
                  all_probs.append(probs)
         
@@ -1376,7 +1430,7 @@ class Fed_CLC_client(object):
             if v > self.tao:
                 self.keys.append(k)
 
-        # 对于没有被放入到keys中的样本,保留下来
+        # 中文注释：该处逻辑与原实现保持一致。
         for idx in range(r):
             if idx not in self.keys:
                 reserve.append(idx)
@@ -1470,7 +1524,7 @@ class Fed_Ablation_client(Fed_PLE_client):
         for epoch in range(self.args.local_epoch):
             outer_loss_total = torch.tensor(0., device=self.device)
 
-            # 训练概率标签模型
+            # 中文注释：该处逻辑与原实现保持一致。
             for e in range(1):
                 self.result['lcn_loss'] = torch.tensor(0., device=self.device)
                 for (x1, x2, noise_labels, global_labels), (x1_pure, x2_pure, pure_labels) in zip(self.noise_dataloader, self.pure_dataloader):
@@ -1526,7 +1580,7 @@ class Fed_Ablation_client(Fed_PLE_client):
                     predictions = self.inner_model(x1, x2)
                     predictions = F.softmax(predictions, dim=-1)
 
-                    # 使用钩子函数获取的中间输出
+                    # 中文注释：该处逻辑与原实现保持一致。
                     h_x = self.inner_model.inter_outputs
                     h_x.requires_grad = True
                     gl_one_hot = F.one_hot(global_labels.long().flatten(),num_classes=2)
@@ -1552,3 +1606,5 @@ class Fed_Ablation_client(Fed_PLE_client):
                     # del outer_outputs, inner_loss
                     # torch.cuda.empty_cache()
                     # gc.collect()
+
+

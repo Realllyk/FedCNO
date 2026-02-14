@@ -117,6 +117,12 @@ def parse_args():
     )
 
     parser.add_argument(
+        '--mando_local_lr',
+        default=0.0001,
+        type=float
+    )
+
+    parser.add_argument(
         '-d',
         '--dropout', 
         type=float, 
@@ -298,7 +304,7 @@ def parse_args():
         '--model_type', 
         type=str, 
         default='CBGRU',
-        choices=['CBGRU', 'CGE'],
+        choices=['CBGRU', 'CGE', 'MANDO'],
         help="predict model used in FedCNO"
     )
 
@@ -333,6 +339,13 @@ def parse_args():
         type=str,
         default='./data/',
         help='directory of data'
+    )
+
+    parser.add_argument(
+        '--mando_graph_dir',
+        type=str,
+        default='./data/mando_graph',
+        help='directory of MANDO cached graph data'
     )
 
     parser.add_argument(
@@ -383,6 +396,35 @@ def parse_args():
         type=float,
         default=0.9,
         help='Momentum coefficient for EMA model in FedCRD'
+    )
+
+    parser.add_argument(
+        '--crd_q_anchor',
+        type=str,
+        default='global',
+        choices=['global', 'ema'],
+        help='anchor model for q_k consistency stats in FedCRD: global or ema'
+    )
+
+    parser.add_argument(
+        '--crd_rho',
+        type=float,
+        default=0.7,
+        help='rho quantile used to compute adaptive clipping threshold tau^t in FedCRD'
+    )
+
+    parser.add_argument(
+        '--crd_eps',
+        type=float,
+        default=1e-8,
+        help='numerical stability epsilon used in FedCRD normalization and clipping'
+    )
+
+    parser.add_argument(
+        '--crd_sigma',
+        type=str,
+        default='softplus',
+        help='positive mapping function for FedCRD reliability (currently fixed to softplus)'
     )
 
     parser.add_argument(
