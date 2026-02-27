@@ -13,10 +13,32 @@ from data_processing.preprocessing import compute_global_clusters, coordinate_sy
 from models.model_factory import build_model
 from trainers.server import LGV_server
 from trainers.client import Fed_LGV_client, Fed_Avg_client
+from trainers.lgv_ablation_clients import (
+    FedLGV_NoGlobalClient,
+    FedLGV_NoGlobalNoUncAlphaClient,
+    FedLGV_NoLocalClient,
+    FedLGV_NoLocalNoGlobalClient,
+    FedLGV_NoUncAlphaClient,
+)
 from global_test import global_test
 import random
 import time
 import concurrent.futures
+
+
+def get_lgv_client_class(ablation):
+    mapping = {
+        'full': Fed_LGV_client,
+        'no_local': FedLGV_NoLocalClient,
+        'no_global': FedLGV_NoGlobalClient,
+        'no_unc_alpha': FedLGV_NoUncAlphaClient,
+        'no_cons_loss': Fed_LGV_client,
+        'no_local_no_global': FedLGV_NoLocalNoGlobalClient,
+        'no_global_no_unc_alpha': FedLGV_NoGlobalNoUncAlphaClient,
+    }
+    if ablation not in mapping:
+        raise ValueError(f"Unsupported ablation setting: {ablation}")
+    return mapping[ablation]
 
 
 def train_warmup_client(client_id, args, global_model, criterion, dataset, run_timestamp):
@@ -75,6 +97,9 @@ def train_lgv_client(client_id, client, global_model, global_weight):
 
 if __name__ == '__main__':
     args = parse_args()
+    if args.ablation == 'no_cons_loss':
+        args.consistency_score = False
+
     if args.model_type == "MANDO" and args.vul != "tod":
         raise ValueError("MANDO only supports --vul tod in this project.")
     input_size, time_steps = 100, 300
@@ -200,17 +225,17 @@ if __name__ == '__main__':
     print("\n--- WarmUp Phase Finished. Testing with Fed_Avg lab_name ---")
     original_lab_name = args.lab_name
     args.lab_name = 'Fed_Avg'
-    # global_test(
-    #     server.global_model, 
-    #     test_dl, 
-    #     criterion, 
-    #     args, 
-    #     f"WarmUp_FedAvg", 
-    #     reduction='mean', 
-    #     run_timestamp=run_timestamp, 
-    #     save_result=True,
-    #     tag='test'
-    # )
+    global_test(
+        server.global_model, 
+        test_dl, 
+        criterion, 
+        args, 
+        f"WarmUp_FedAvg", 
+        reduction='mean', 
+        run_timestamp=run_timestamp, 
+        save_result=True,
+        tag='test'
+    )
     args.lab_name = original_lab_name
     print("-----------------------------------------------------------\n")
     
@@ -260,8 +285,9 @@ if __name__ == '__main__':
     # 每个客户端被实例化为 Fed_LGV_client，并进行本地视角的初始化。
     clients = []
 
+    client_cls = get_lgv_client_class(args.ablation)
     for i in range(args.client_num):
-        client = Fed_LGV_client(
+        client = client_cls(
             args,
             nn.CrossEntropyLoss(weight=class_weights, reduction=reduction),
             copy.deepcopy(server.global_model),
@@ -335,6 +361,17 @@ if __name__ == '__main__':
             )
             print("-------------------------------\n")
     
-    global_test(server.global_model, test_dl, criterion, args, f"{args.num_neigh}neigh_{args.global_weight}_{args.lab_name}", run_timestamp=run_timestamp)
+    print("\n--- Final Test ---")
+    global_test(
+        server.global_model,
+        test_dl,
+        criterion,
+        args,
+        f"{args.num_neigh}neigh_{args.global_weight}_{args.lab_name}",
+        reduction=reduction,
+        run_timestamp=run_timestamp,
+        save_result=True,
+        tag='test'
+    )
         
     

@@ -1,0 +1,13 @@
+﻿vulnerability,metric,0.05,0.1,0.15,0.2,0.25,0.3
+sys_reentrancy,Accuracy,0.842365,0.825944,0.837438,0.801314,0.730706,0.643678
+sys_reentrancy,Precision,0.794676,0.786193,0.778761,0.749001,0.657337,0.607633
+sys_reentrancy,Recall(TPR),0.902778,0.868056,0.916667,0.875000,0.916667,0.670139
+sys_reentrancy,F1 score,0.844435,0.825013,0.842105,0.806526,0.763707,0.632293
+sys_reentrancy,False positive rate(FPR),0.211838,0.211838,0.233645,0.264798,0.436137,0.380062
+sys_reentrancy,False negative rate(FNR),0.097222,0.131944,0.083333,0.125000,0.083333,0.329861
+sys_timestamp,Accuracy,,,,0.611111,,0.527778
+sys_timestamp,Precision,,,,0.522661,,0.469002
+sys_timestamp,Recall(TPR),,,,0.777778,,0.555556
+sys_timestamp,F1 score,,,,0.623429,,0.485268
+sys_timestamp,False positive rate(FPR),,,,0.507937,,0.492063
+sys_timestamp,False negative rate(FNR),,,,0.222222,,0.444444

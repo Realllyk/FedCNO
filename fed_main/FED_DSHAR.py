@@ -31,6 +31,30 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
+def tune_dshar_for_timestamp_cbgru(args):
+    """
+    Apply hyper-parameter tuning only for CBGRU + timestamp setting.
+    """
+    if args.model_type == "CBGRU" and args.vul == "timestamp":
+        # Improve pseudo-label quality and reduce early instability.
+        args.cbgru_local_lr = max(args.cbgru_local_lr, 1e-4)
+        args.dshar_warmup_epoch = max(args.dshar_warmup_epoch, 15)
+        args.dshar_split_ratio = min(args.dshar_split_ratio, 0.25)
+        args.dshar_pseudo_threshold = min(args.dshar_pseudo_threshold, 0.75)
+        args.dshar_mr_refresh_interval = max(args.dshar_mr_refresh_interval, 2)
+        args.dshar_early_stop_patience = max(args.dshar_early_stop_patience, 15)
+        print(
+            "[TUNE][Fed_DSHAR] Applied timestamp+CBGRU overrides: "
+            f"cbgru_local_lr={args.cbgru_local_lr}, "
+            f"dshar_warmup_epoch={args.dshar_warmup_epoch}, "
+            f"dshar_split_ratio={args.dshar_split_ratio}, "
+            f"dshar_pseudo_threshold={args.dshar_pseudo_threshold}, "
+            f"dshar_mr_refresh_interval={args.dshar_mr_refresh_interval}, "
+            f"dshar_early_stop_patience={args.dshar_early_stop_patience}"
+        )
+    return args
+
+
 def split_client_dataset_by_mr(dataset, mr_model, args):
     mr_model.eval()
     loader = DataLoader(dataset, batch_size=args.batch, shuffle=False, pin_memory=True)
@@ -142,6 +166,7 @@ def train_dshar_client(
 
 if __name__ == "__main__":
     args = parse_args()
+    args = tune_dshar_for_timestamp_cbgru(args)
     if args.seed is not None:
         set_seed(int(args.seed))
 

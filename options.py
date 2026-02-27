@@ -309,6 +309,22 @@ def parse_args():
     )
 
     parser.add_argument(
+        '--ablation',
+        type=str,
+        default='full',
+        choices=[
+            'full',
+            'no_local',
+            'no_global',
+            'no_unc_alpha',
+            'no_cons_loss',
+            'no_local_no_global',
+            'no_global_no_unc_alpha',
+        ],
+        help='Fed_LGV ablation mode (used by fed_main/Fed_LGV_ablation.py)'
+    )
+
+    parser.add_argument(
         '--diff',
         action = 'store_true',
         help='whether noise rate different'
@@ -425,6 +441,43 @@ def parse_args():
         type=str,
         default='softplus',
         help='positive mapping function for FedCRD reliability (currently fixed to softplus)'
+    )
+
+    parser.add_argument(
+        '--crd_ablation_mode',
+        type=str,
+        default='full',
+        choices=['full', 'no_amb', 'no_cal', 'no_clip', 'only_clip', 'fedavg'],
+        help='FedCRD ablation mode used by fed_main/Fed_CRD_ablation.py'
+    )
+
+    parser.add_argument(
+        '--crd_noamb_variant',
+        type=str,
+        default='soft',
+        choices=['soft', 'const'],
+        help='NoAmb variant: soft=min(q_loc,q_glob), const=constant q_k'
+    )
+
+    parser.add_argument(
+        '--crd_const_q',
+        type=float,
+        default=1.0,
+        help='constant q_k value when --crd_noamb_variant const'
+    )
+
+    parser.add_argument(
+        '--exp_tag',
+        type=str,
+        default='crd_ablation',
+        help='experiment tag used in run timestamp and post-analysis filtering'
+    )
+
+    parser.add_argument(
+        '--seed_list',
+        type=str,
+        default='',
+        help='optional comma-separated seeds for external sweep scripts'
     )
 
     parser.add_argument(

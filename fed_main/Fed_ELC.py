@@ -38,6 +38,24 @@ def add_elc_args(args):
         args.K_pencil = 10
     return args
 
+
+def tune_elc_for_timestamp_cbgru(args):
+    """
+    Apply hyper-parameter tuning only for CBGRU + timestamp setting.
+    """
+    if args.model_type == "CBGRU" and args.vul == "timestamp":
+        # Stabilize local optimization and delay noisy-stage transition.
+        args.local_epoch = max(args.local_epoch, 2)
+        args.outer_lr = min(args.outer_lr, 2e-4)
+        args.epoch_of_stage1 = max(args.epoch_of_stage1, 30)
+        args.lambda_pencil = min(args.lambda_pencil, 400)
+        print(
+            "[TUNE][Fed_ELC] Applied timestamp+CBGRU overrides: "
+            f"local_epoch={args.local_epoch}, outer_lr={args.outer_lr}, "
+            f"epoch_of_stage1={args.epoch_of_stage1}, lambda_pencil={args.lambda_pencil}"
+        )
+    return args
+
 def get_client_stats(client_id, args, global_model, dataset, cls_num_list=None):
     """
     Compute class-wise loss using the global model for GMM splitting
@@ -105,6 +123,7 @@ def train_one_client_elc(client_id, args, global_model, criterion, dataset, is_n
 if __name__ == '__main__':
     args = parse_args()
     args = add_elc_args(args)
+    args = tune_elc_for_timestamp_cbgru(args)
     
     INPUT_SIZE, TIME_STAMP = 100, 300
 
