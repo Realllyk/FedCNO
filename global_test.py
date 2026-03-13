@@ -42,17 +42,8 @@ def _load_result_list(result_file_path):
     if not os.path.exists(result_file_path):
         return []
     try:
-        data = None
-        for attempt in range(8):
-            try:
-                with open(result_file_path, 'r', encoding='utf-8') as file:
-                    data = json.load(file)
-                break
-            except PermissionError:
-                # Windows can transiently lock files under concurrent writers.
-                if attempt == 7:
-                    raise
-                time.sleep(0.05 * (attempt + 1))
+        with open(result_file_path, 'r', encoding='utf-8') as file:
+            data = json.load(file)
         if isinstance(data, dict):
             return [data]
         if isinstance(data, list):
@@ -69,34 +60,10 @@ def _load_result_list(result_file_path):
 
 
 def _atomic_dump_json(result_file_path, data):
-    tmp_path = f"{result_file_path}.{os.getpid()}.{time.time_ns()}.tmp"
+    tmp_path = f"{result_file_path}.tmp"
     with open(tmp_path, 'w', encoding='utf-8') as file:
         json.dump(data, file, ensure_ascii=False, indent=4)
-
-    for attempt in range(12):
-        try:
-            os.replace(tmp_path, result_file_path)
-            return
-        except PermissionError:
-            if attempt == 11:
-                break
-            time.sleep(0.05 * (attempt + 1))
-
-    # Fallback for stubborn locks: try direct write with retries.
-    for attempt in range(8):
-        try:
-            with open(result_file_path, 'w', encoding='utf-8') as file:
-                json.dump(data, file, ensure_ascii=False, indent=4)
-            try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except OSError:
-                pass
-            return
-        except PermissionError:
-            if attempt == 7:
-                raise
-            time.sleep(0.05 * (attempt + 1))
+    os.replace(tmp_path, result_file_path)
 
 
 def global_test(
@@ -193,8 +160,9 @@ def global_test(
     # Assuming 'pure' noise type might not use noise_rate, but keeping structure consistent
     current_noise_type = args.noise_type
     
+    result_root = getattr(args, 'result_root', 'graduate_final_result')
     result_path = Path(os.path.realpath(__file__)).parents[0].joinpath(
-        'graduate_final_result',
+        result_root,
         lab_name,
         args.model_type,
         current_noise_type,

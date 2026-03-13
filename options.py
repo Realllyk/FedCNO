@@ -562,6 +562,12 @@ def parse_args():
         help='number of workers for parallel training'
     )
 
+    parser.add_argument(
+        '--save_crd_diag',
+        action='store_true',
+        help='save FedCRD diagnostic CSV to result/crd_rq1_diag; default disabled'
+    )
+
     # Binary threshold tuning (used by fed_main/Fed_CRD_Tuned.py).
     # This is useful when argmax gives high precision but lower recall.
     parser.add_argument(

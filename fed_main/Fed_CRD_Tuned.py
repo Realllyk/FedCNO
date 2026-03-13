@@ -319,10 +319,13 @@ if __name__ == '__main__':
         f"rate_{args.noise_rate}",
         f"seed_{int(args.seed)}"
     )
-    server.diag_logger = CRDDiagLogger(
-        log_dir=os.path.join("result", "crd_rq1_diag"),
-        run_tag=run_tag
-    )
+    if getattr(args, "save_crd_diag", False):
+        server.diag_logger = CRDDiagLogger(
+            log_dir=os.path.join("result", "crd_rq1_diag"),
+            run_tag=run_tag
+        )
+    else:
+        server.diag_logger = None
     server.diag_meta = {
         "noise_type": args.noise_type,
         "noise_rate": args.noise_rate,
@@ -381,7 +384,7 @@ if __name__ == '__main__':
                 args,
                 "WarmUp_FedAvg_CRD",
                 run_timestamp=run_timestamp,
-                save_result=True,
+                save_result=False,
                 tag='valid',
                 epoch=epoch
             )

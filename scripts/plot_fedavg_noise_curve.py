@@ -25,10 +25,10 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument(
-        "--fedavg_root",
+        "--base_dir",
         type=Path,
-        default=Path("graduate_final_result") / "Fed_Avg",
-        help="FedAvg result root directory.",
+        default=Path("graduate_final_result"),
+        help="Base directory for both input and output paths, e.g., graduate_final_result.",
     )
     parser.add_argument("--model_type", type=str, required=True, help="Model type, e.g., CBGRU/CGE/MANDO.")
     parser.add_argument("--noise_type", type=str, required=True, help="Noise type, e.g., non_noise/sys_noise.")
@@ -39,18 +39,6 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=",".join(str(x) for x in DEFAULT_NOISE_RATES),
         help="Comma-separated noise rates, e.g., 0.0,0.05,0.1,0.15,0.2,0.25,0.3.",
-    )
-    parser.add_argument(
-        "--csv_out",
-        type=Path,
-        default=None,
-        help="Output CSV path. Default: analysis_csv/Fed_Avg/<model>/<noise_type>/<dataset>_lastN.csv",
-    )
-    parser.add_argument(
-        "--fig_out",
-        type=Path,
-        default=None,
-        help="Output figure path. Default: figure/Fed_Avg/<model>/<noise_type>/<dataset>_lastN.png",
     )
     return parser.parse_args()
 
@@ -135,35 +123,90 @@ def average_latest_metrics(result_file: Path, last_n: int) -> Tuple[Dict[str, Op
     for metric_name, values in metric_values.items():
         averaged[metric_name] = sum(values) / len(values) if values else None
 
-    averaged["score"] = averaged["f1"]
     return averaged, len(latest)
 
 
-def resolve_output_paths(args: argparse.Namespace) -> Tuple[Path, Path]:
-    default_csv = Path("analysis_csv") / "Fed_Avg" / args.model_type / args.noise_type
-    default_fig = Path("figure") / "Fed_Avg" / args.model_type / args.noise_type
-    csv_out = args.csv_out or (default_csv / f"{args.dataset}_last{args.last_n}.csv")
-    fig_out = args.fig_out or (default_fig / f"{args.dataset}_last{args.last_n}.png")
-    return csv_out, fig_out
+def resolve_output_dirs(args: argparse.Namespace) -> Tuple[Path, Path]:
+    default_csv = args.base_dir / "analysis_csv" / "Fed_Avg" / args.model_type / args.noise_type
+    default_fig = args.base_dir / "figure" / "Fed_Avg" / args.model_type / args.noise_type
+    return default_csv, default_fig
 
 
 def to_rate_tag(rate: float) -> str:
     return f"{rate:.2f}".rstrip("0").rstrip(".")
 
 
+def resolve_rate_dir(root: Path, rate: float) -> Optional[Path]:
+    candidates = []
+    for tag in [to_rate_tag(rate), f"{rate:.1f}", f"{rate:.2f}", str(rate)]:
+        if tag not in candidates:
+            candidates.append(tag)
+
+    for tag in candidates:
+        rate_dir = root / tag
+        if rate_dir.exists():
+            return rate_dir
+    return None
+
+
+def write_metric_csv(rows: List[Dict], metric: str, csv_out: Path) -> None:
+    with csv_out.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["noise_rate", "used_runs", metric, "result_file"],
+        )
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "noise_rate": row["noise_rate"],
+                    "used_runs": row["used_runs"],
+                    metric: row[metric],
+                    "result_file": row["result_file"],
+                }
+            )
+
+
+def plot_metrics_figure(rows: List[Dict], noise_rates: List[float], fig_out: Path, args: argparse.Namespace) -> None:
+    metrics = ["acc", "precision", "f1", "recall"]
+    metric_titles = {
+        "acc": "Accuracy(%)",
+        "precision": "Precision(%)",
+        "f1": "F1 Score(%)",
+        "recall": "Recall(%)",
+    }
+    x = [r["noise_rate"] * 100 for r in rows]
+    x_ticks = [r * 100 for r in noise_rates]
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+
+    for ax, metric in zip(axes, metrics):
+        y = [safe_float(r[metric]) for r in rows]
+        ax.plot(x, y, marker="o")
+        ax.set_title(metric_titles[metric])
+        ax.set_xlabel("Noise Level(%)")
+        ax.set_ylabel("Matric Value(%)")
+        ax.set_xticks(x_ticks)
+        ax.set_ylim(0.0, 1.0)
+        # Keep each subplot coordinate box in 1:1 shape.
+        ax.set_box_aspect(1)
+
+    fig.tight_layout()
+    fig.savefig(fig_out, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main() -> None:
     args = parse_args()
     noise_rates = [float(x.strip()) for x in args.noise_rates.split(",") if x.strip()]
 
-    root = args.fedavg_root / args.model_type / args.noise_type
+    root = args.base_dir / "Fed_Avg" / args.model_type / args.noise_type
     if not root.exists():
         raise FileNotFoundError(f"Config path not found: {root}")
 
     rows = []
     for rate in noise_rates:
-        rate_tag = to_rate_tag(rate)
-        rate_dir = root / rate_tag
-        if not rate_dir.exists():
+        rate_dir = resolve_rate_dir(root, rate)
+        if rate_dir is None:
             rows.append(
                 {
                     "noise_rate": rate,
@@ -172,7 +215,6 @@ def main() -> None:
                     "precision": None,
                     "recall": None,
                     "f1": None,
-                    "score": None,
                     "result_file": "",
                 }
             )
@@ -188,7 +230,6 @@ def main() -> None:
                     "precision": None,
                     "recall": None,
                     "f1": None,
-                    "score": None,
                     "result_file": "",
                 }
             )
@@ -203,43 +244,21 @@ def main() -> None:
                 "precision": averaged["precision"],
                 "recall": averaged["recall"],
                 "f1": averaged["f1"],
-                "score": averaged["score"],
                 "result_file": str(result_file),
             }
         )
 
-    csv_out, fig_out = resolve_output_paths(args)
-    csv_out.parent.mkdir(parents=True, exist_ok=True)
-    fig_out.parent.mkdir(parents=True, exist_ok=True)
+    csv_dir, fig_dir = resolve_output_dirs(args)
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    fig_dir.mkdir(parents=True, exist_ok=True)
 
-    with csv_out.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["noise_rate", "used_runs", "acc", "precision", "recall", "f1", "score", "result_file"],
-        )
-        writer.writeheader()
-        writer.writerows(rows)
+    for metric in ["acc", "precision", "recall", "f1"]:
+        csv_out = csv_dir / f"{args.dataset}_{metric}_last{args.last_n}.csv"
+        write_metric_csv(rows, metric, csv_out)
+        print(f"[OK] CSV saved: {csv_out}")
 
-    x = [r["noise_rate"] for r in rows]
-    plt.figure(figsize=(8, 5))
-    for metric in ["acc", "precision", "recall", "f1", "score"]:
-        y = [safe_float(r[metric]) for r in rows]
-        plt.plot(x, y, marker="o", label=metric)
-
-    plt.title(
-        f"Fed_Avg | {args.model_type} | {args.noise_type} | {args.dataset} | latest {args.last_n} mean"
-    )
-    plt.xlabel("noise_rate")
-    plt.ylabel("metric")
-    plt.xticks(noise_rates)
-    plt.ylim(0.0, 1.0)
-    plt.grid(alpha=0.3, linestyle="--")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(fig_out, dpi=200)
-    plt.close()
-
-    print(f"[OK] CSV saved: {csv_out}")
+    fig_out = fig_dir / f"{args.dataset}_metrics_last{args.last_n}.png"
+    plot_metrics_figure(rows, noise_rates, fig_out, args)
     print(f"[OK] Figure saved: {fig_out}")
 
 
