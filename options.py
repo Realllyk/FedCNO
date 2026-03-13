@@ -315,6 +315,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        '--result_root',
+        type=str,
+        default='graduate_final_result',
+        help='root directory for global test results'
+    )
+
+    parser.add_argument(
         '--num_neigh',
         type = int,
         default = 5,
