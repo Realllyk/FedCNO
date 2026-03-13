@@ -38,7 +38,7 @@ def train_one_client(client_id, args, global_model, criterion, dataset):
     result = client.result
     loss = client.result['loss']
     
-    # 清理内存
+    # 娓呯悊鍐呭瓨
     del client
     torch.cuda.empty_cache()
     gc.collect()
@@ -84,15 +84,14 @@ if __name__ == '__main__':
     for i in range(args.client_num):
         # train_dl, INPUT_SIZE, TIME_STAMP = gen_cbgru_dl(i, args.vul, args.noise_type, args.noise_rate, args.batch)
         # dataloader_dict['train'].append(train_dl)
-        # ds = gen_cbgru_ds(i, args.vul, args.noise_type, args.noise_rate, args.random_noise, args.num_neigh)
+        # ds = gen_cbgru_ds(i, args.vul, args.noise_type, args.noise_rate, args.num_neigh)
         ds = gen_client_ds(
             args.model_type, 
             i, 
             args.vul, 
             args.noise_type, 
             noise_rates[i], 
-            args.random_noise, 
-            args.num_neigh,
+                        args.num_neigh,
             assigned_clusters=assigned_clusters_dict,
             global_cluster_map=global_cluster_map,
             n_clusters=args.n_clusters,
@@ -180,3 +179,5 @@ if __name__ == '__main__':
     
     
     global_test(server.global_model, test_dl, criterion, args, args.lab_name, run_timestamp=run_timestamp)
+
+

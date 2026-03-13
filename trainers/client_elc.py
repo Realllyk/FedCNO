@@ -2,8 +2,33 @@ import copy
 import torch
 import numpy as np
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
 from trainers.client import Fed_Avg_client
 from utils.fedelc_losses import LogitAdjust, pencil_loss
+from data_processing.mando_collate import mando_collate_fn
+
+
+def _move_to_device(obj, device):
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        return {k: _move_to_device(v, device) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_move_to_device(v, device) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_move_to_device(v, device) for v in obj)
+    return obj
+
+
+def _get_collate_fn(args):
+    return mando_collate_fn if args.model_type == "MANDO" else None
+
+
+def _indexed_mando_collate_fn(batch):
+    base_batch = [(item[0], item[1], item[2]) for item in batch]
+    x1, x2, y = mando_collate_fn(base_batch)
+    idx = torch.tensor([item[3] for item in batch], dtype=torch.long)
+    return x1, x2, y, idx
 
 class Fed_ELC_client(Fed_Avg_client):
     def __init__(self, args, criterion, model, dataset, client_id=0, run_timestamp=None, cls_num_list=None):
@@ -30,8 +55,12 @@ class Fed_ELC_client(Fed_Avg_client):
         # Create DataLoader (assuming dataset is TensorDataset or similar)
         # Note: Fed_Avg_client structure implies dataset handling might need adaptation
         # Here we assume self.dataset is iterable or we create a loader
-        from torch.utils.data import DataLoader
-        train_loader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True)
+        train_loader = DataLoader(
+            self.dataset,
+            batch_size=self.args.batch,
+            shuffle=True,
+            collate_fn=_get_collate_fn(self.args)
+        )
         
         epoch_loss = []
         for epoch in range(self.args.local_epoch):
@@ -40,11 +69,11 @@ class Fed_ELC_client(Fed_Avg_client):
                 # Unpack batch dynamically
                 if len(batch) == 2:
                     x, y = batch
-                    x_in = x.to(self.device)
+                    x_in = _move_to_device(x, self.device)
                 else:
                     x1, x2, y = batch[0], batch[1], batch[2]
-                    x_in = [x1.to(self.device), x2.to(self.device)]
-                y = y.to(self.device).long()
+                    x_in = [_move_to_device(x1, self.device), _move_to_device(x2, self.device)]
+                y = _move_to_device(y, self.device).long()
                 
                 optimizer.zero_grad()
                 
@@ -83,8 +112,12 @@ class Fed_ELC_client(Fed_Avg_client):
         loss_per_class = np.zeros(num_classes)
         count_per_class = np.zeros(num_classes)
         
-        from torch.utils.data import DataLoader
-        train_loader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False)
+        train_loader = DataLoader(
+            self.dataset,
+            batch_size=self.args.batch,
+            shuffle=False,
+            collate_fn=_get_collate_fn(self.args)
+        )
         
         criterion = torch.nn.CrossEntropyLoss(reduction='none')
         
@@ -92,11 +125,11 @@ class Fed_ELC_client(Fed_Avg_client):
             for batch in train_loader:
                 if len(batch) == 2:
                     x, y = batch
-                    x_in = x.to(self.device)
+                    x_in = _move_to_device(x, self.device)
                 else:
                     x1, x2, y = batch[0], batch[1], batch[2]
-                    x_in = [x1.to(self.device), x2.to(self.device)]
-                y = y.to(self.device).long()
+                    x_in = [_move_to_device(x1, self.device), _move_to_device(x2, self.device)]
+                y = _move_to_device(y, self.device).long()
 
                 if isinstance(x_in, list):
                     output = self.model(*x_in)
@@ -133,7 +166,13 @@ class Fed_ELC_client(Fed_Avg_client):
                 return data + (idx,) # (x, y, idx)
         
         indexed_ds = IndexedDataset(self.dataset)
-        train_loader = torch.utils.data.DataLoader(indexed_ds, batch_size=self.args.batch, shuffle=True)
+        collate_fn = _indexed_mando_collate_fn if self.args.model_type == "MANDO" else None
+        train_loader = torch.utils.data.DataLoader(
+            indexed_ds,
+            batch_size=self.args.batch,
+            shuffle=True,
+            collate_fn=collate_fn
+        )
 
         # y_tilde is updated by gradient on labels (PENCIL)
         y_tilde = soft_labels.clone().detach().cpu()
@@ -145,15 +184,16 @@ class Fed_ELC_client(Fed_Avg_client):
         for epoch in range(self.args.local_epoch):
             batch_loss = []
             labels_grad = torch.zeros_like(y_tilde)
-            for *x, y, idx in train_loader:
-                # Unpack x (might be tuple if multiple inputs)
-                if len(x) == 1:
-                    x_in = x[0].to(self.device)
+            for batch in train_loader:
+                if len(batch) == 3:
+                    x, y, idx = batch
+                    x_in = _move_to_device(x, self.device)
                 else:
-                    x_in = [item.to(self.device) for item in x]
-                
-                y = y.to(self.device).long()
-                idx = idx.to(self.device)
+                    x1, x2, y, idx = batch
+                    x_in = [_move_to_device(x1, self.device), _move_to_device(x2, self.device)]
+
+                y = _move_to_device(y, self.device).long()
+                idx = _move_to_device(idx, self.device)
                 idx_cpu = idx.detach().cpu()
                 
                 optimizer_model.zero_grad()
@@ -188,16 +228,21 @@ class Fed_ELC_client(Fed_Avg_client):
         # Refine soft labels: merge estimated labels and model predictions
         self.model.eval()
         with torch.no_grad():
-            eval_loader = torch.utils.data.DataLoader(self.dataset, batch_size=self.args.batch, shuffle=False)
+            eval_loader = torch.utils.data.DataLoader(
+                self.dataset,
+                batch_size=self.args.batch,
+                shuffle=False,
+                collate_fn=_get_collate_fn(self.args)
+            )
             
             all_outputs = []
             for batch in eval_loader:
                 if len(batch) == 2:
                     x, y = batch
-                    x_in = x.to(self.device)
+                    x_in = _move_to_device(x, self.device)
                 else:
                     x1, x2, y = batch[0], batch[1], batch[2]
-                    x_in = [x1.to(self.device), x2.to(self.device)]
+                    x_in = [_move_to_device(x1, self.device), _move_to_device(x2, self.device)]
 
                 if isinstance(x_in, list):
                     output = self.model(*x_in)

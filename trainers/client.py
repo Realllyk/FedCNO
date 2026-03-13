@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, TensorDataset, Subset
 from torch.utils.tensorboard import SummaryWriter
 from data_processing.preprocessing import vec2one, reduced_name_labels, read_pretrain_feature, relabel_with_pretrained_knn, resolve_pretrain_feature_dir
 from data_processing.mando_collate import mando_collate_fn, lgv_mando_collate_fn
-from models.model_factory import get_local_lr
+from models.model_factory import get_local_lr, get_local_epoch
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import confusion_matrix
 
@@ -35,6 +35,44 @@ def _unpack_batch(batch):
     if len(batch) == 4:
         return batch[0], batch[1], batch[2], batch[3]
     raise ValueError(f"Unexpected batch structure with length={len(batch)}")
+
+
+def _sample_to_feature_vector(x1, x2):
+    if isinstance(x1, dict):
+        node_features = x1.get("node_features")
+        mask = x1.get("mask")
+        if not torch.is_tensor(node_features):
+            raise TypeError("Expected tensor x1['node_features'] for MANDO sample.")
+        node_features = node_features.float()
+        if node_features.dim() != 2:
+            raise ValueError(f"Expected 2D node_features, got shape={tuple(node_features.shape)}")
+        if torch.is_tensor(mask) and mask.dim() == 1 and mask.numel() == node_features.size(0):
+            valid = mask > 0
+            if torch.any(valid):
+                pooled = node_features[valid].mean(dim=0)
+            else:
+                pooled = node_features.mean(dim=0)
+        else:
+            pooled = node_features.mean(dim=0)
+        f1 = pooled.detach().cpu().numpy().reshape(-1)
+    else:
+        f1 = x1.view(-1).detach().cpu().numpy()
+
+    if torch.is_tensor(x2):
+        f2 = x2.view(-1).detach().cpu().numpy()
+    else:
+        f2 = np.asarray(x2).reshape(-1)
+    return np.concatenate([f1, f2])
+
+
+def _resolve_mando_collate_fn(dataset):
+    try:
+        sample = dataset[0]
+        if isinstance(sample, (list, tuple)) and len(sample) >= 4:
+            return lgv_mando_collate_fn
+    except Exception:
+        pass
+    return mando_collate_fn
 
 
 class Fed_Avg_client(object):
@@ -150,7 +188,7 @@ class Fed_Avg_client(object):
         return pure_dl
            
     def train(self):
-        collate_fn = mando_collate_fn if self.args.model_type == "MANDO" else None
+        collate_fn = _resolve_mando_collate_fn(self.dataset) if self.args.model_type == "MANDO" else None
         dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True, collate_fn=collate_fn)
         lr = get_local_lr(self.args)
         # Add weight decay for regularization
@@ -161,7 +199,8 @@ class Fed_Avg_client(object):
         self.result['sample'] = len(self.dataset)
 
         self.model.train()
-        for epoch in range(self.args.cbgru_local_epoch):
+        local_epoch = get_local_epoch(self.args)
+        for epoch in range(local_epoch):
             self.result['loss'] = 0
             for batch in dataloader:
                 optimizer.zero_grad()
@@ -378,21 +417,28 @@ class Fed_ARFL_client(object):
         self.num_train_samples = len(dataset)
     
     def train(self):
-        if self.args.model_type == "CBGRU":
-            lr = self.args.cbgru_local_lr
-        elif self.args.model_type == "CGE":
-            lr = self.args.cge_local_lr
+        lr = get_local_lr(self.args)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         self.result = dict()
         device = self.device
-        dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
+        collate_fn = mando_collate_fn if self.args.model_type == "MANDO" else None
+        dataloader = DataLoader(
+            self.dataset,
+            batch_size=self.args.batch,
+            shuffle=True,
+            pin_memory=True,
+            collate_fn=collate_fn
+        )
 
-        for epoch in range(self.args.local_epoch):
+        for epoch in range(get_local_epoch(self.args)):
             self.model.train()
             self.result['loss'] = 0
-            for x1, x2 ,y in dataloader:
+            for batch in dataloader:
                 optimizer.zero_grad()
-                x1, x2, y = x1.to(device), x2.to(device), y.to(device)
+                x1, x2, y, _ = _unpack_batch(batch)
+                x1 = _move_to_device(x1, device)
+                x2 = _move_to_device(x2, device)
+                y = _move_to_device(y, device)
                 outputs = self.model(x1, x2)
                 y = y.flatten().long()
 
@@ -413,9 +459,19 @@ class Fed_ARFL_client(object):
             # self.result['test_loss'] = 0
             self.test_loss = 0
             self.model.eval()
-            dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
-            for x1, x2, y in dataloader:
-                x1, x2, y = x1.to(device), x2.to(device), y.to(device)
+            collate_fn = mando_collate_fn if self.args.model_type == "MANDO" else None
+            dataloader = DataLoader(
+                self.dataset,
+                batch_size=self.args.batch,
+                shuffle=True,
+                pin_memory=True,
+                collate_fn=collate_fn
+            )
+            for batch in dataloader:
+                x1, x2, y, _ = _unpack_batch(batch)
+                x1 = _move_to_device(x1, device)
+                x2 = _move_to_device(x2, device)
+                y = _move_to_device(y, device)
                 outputs = self.model(x1, x2)
 
                 y = y.flatten().long()
@@ -455,7 +511,14 @@ class Fed_Corr_client(Fed_Avg_client):
             model,
             dataset
         )
-        self.dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
+        collate_fn = mando_collate_fn if self.args.model_type == "MANDO" else None
+        self.dataloader = DataLoader(
+            self.dataset,
+            batch_size=self.args.batch,
+            shuffle=True,
+            pin_memory=True,
+            collate_fn=collate_fn
+        )
         self.client_id = client_id
         self.global_round = global_round
         
@@ -477,8 +540,7 @@ class Fed_Corr_client(Fed_Avg_client):
             self.tb_writer = SummaryWriter(log_dir=log_dir)
             
             # Initialize global step based on global round and local epochs
-            # Assuming cbgru_local_epoch is used for training
-            local_epochs = getattr(self.args, 'cbgru_local_epoch', 1)
+            local_epochs = get_local_epoch(self.args)
             self.tb_global_step = self.global_round * local_epochs
             
             # Create file with header if it doesn't exist
@@ -488,10 +550,7 @@ class Fed_Corr_client(Fed_Avg_client):
         
 
     def train(self):
-        if self.args.model_type == "CBGRU":
-            lr = self.args.cbgru_local_lr
-        elif self.args.model_type == "CGE":
-            lr = self.args.cge_local_lr
+        lr = get_local_lr(self.args)
         # Add weight decay for regularization
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=self.args.weight_decay)
 
@@ -500,11 +559,14 @@ class Fed_Corr_client(Fed_Avg_client):
         self.result['sample'] = len(self.dataloader)
 
         self.model.train()
-        for epoch in range(self.args.cbgru_local_epoch):
+        for epoch in range(get_local_epoch(self.args)):
             self.result['loss'] = 0
-            for x1, x2, y in self.dataloader:
+            for batch in self.dataloader:
                 optimizer.zero_grad()
-                x1, x2, y = x1.to(device), x2.to(device), y.to(device)
+                x1, x2, y, _ = _unpack_batch(batch)
+                x1 = _move_to_device(x1, device)
+                x2 = _move_to_device(x2, device)
+                y = _move_to_device(y, device)
                 outputs = self.model(x1, x2)
                 y = y.flatten().long()
                 loss = self.criterion(outputs, y)
@@ -658,9 +720,7 @@ class Fed_LGV_client(object):
                     data_item = self.dataset[i]
                     x1 = data_item[0]
                     x2 = data_item[1]
-                    f1 = x1.view(-1).numpy()
-                    f2 = x2.view(-1).numpy()
-                    feature = np.concatenate([f1, f2])
+                    feature = _sample_to_feature_vector(x1, x2)
                     reduced_features.append(feature)
             reduced_features = np.array(reduced_features)
         
@@ -849,8 +909,6 @@ class Fed_LGV_client(object):
         # 拼接所有批次结果 -> (M, C)
         all_probs = torch.cat(all_probs_list, dim=0)
         
-        # 确保它是 tensor 以便索引
-        # 确保它是 tensor 以便索引
         # 确保它是 tensor 以便索引
         knn_indices = torch.tensor(self.reduced_knn_indices, dtype=torch.long, device=self.device)
         
@@ -1144,10 +1202,8 @@ class Fed_CRD_client(Fed_Avg_client):
                 data_item = self.dataset[i]
                 x1 = data_item[0]
                 x2 = data_item[1]
-                
-                f1 = x1.view(-1).numpy()
-                f2 = x2.view(-1).numpy()
-                feature = np.concatenate([f1, f2])
+
+                feature = _sample_to_feature_vector(x1, x2)
                 reduced_features.append(feature)
         
         reduced_features = np.array(reduced_features)
@@ -1210,7 +1266,14 @@ class Fed_CRD_client(Fed_Avg_client):
         
         # Create Subset
         reduced_ds = Subset(self.dataset, indices)
-        dl = DataLoader(reduced_ds, batch_size=self.args.batch, shuffle=False, pin_memory=True)
+        collate_fn = lgv_mando_collate_fn if self.args.model_type == "MANDO" else None
+        dl = DataLoader(
+            reduced_ds,
+            batch_size=self.args.batch,
+            shuffle=False,
+            pin_memory=True,
+            collate_fn=collate_fn
+        )
         
         all_probs = []
         anchor_model.eval()
@@ -1222,7 +1285,8 @@ class Fed_CRD_client(Fed_Avg_client):
                  elif len(batch) >= 4:
                      x1, x2, _, _ = batch[0:4]
                      
-                 x1, x2 = x1.to(self.device), x2.to(self.device)
+                 x1 = _move_to_device(x1, self.device)
+                 x2 = _move_to_device(x2, self.device)
                  outputs = anchor_model(x1, x2)
                  probs = F.softmax(outputs, dim=1)
                  all_probs.append(probs)
@@ -1272,11 +1336,15 @@ class Fed_CRD_client(Fed_Avg_client):
         FedCRD datasets (reused from LGV) might return extra values (agr, index), 
         but we only need x1, x2, y for standard CrossEntropy training.
         """
-        dataloader = DataLoader(self.dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
-        if self.args.model_type == "CBGRU":
-            lr = self.args.cbgru_local_lr
-        elif self.args.model_type == "CGE":
-            lr = self.args.cge_local_lr
+        collate_fn = lgv_mando_collate_fn if self.args.model_type == "MANDO" else None
+        dataloader = DataLoader(
+            self.dataset,
+            batch_size=self.args.batch,
+            shuffle=True,
+            pin_memory=True,
+            collate_fn=collate_fn
+        )
+        lr = get_local_lr(self.args)
         
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=self.args.weight_decay)
 
@@ -1285,7 +1353,7 @@ class Fed_CRD_client(Fed_Avg_client):
         self.result['sample'] = len(self.dataset)
 
         self.model.train()
-        for epoch in range(self.args.cbgru_local_epoch):
+        for epoch in range(get_local_epoch(self.args)):
             self.result['loss'] = 0
             for batch in dataloader:
                 # Dynamically unpack based on length
@@ -1295,7 +1363,9 @@ class Fed_CRD_client(Fed_Avg_client):
                     x1, x2, y = batch[0], batch[1], batch[2]
                 
                 optimizer.zero_grad()
-                x1, x2, y = x1.to(device), x2.to(device), y.to(device)
+                x1 = _move_to_device(x1, device)
+                x2 = _move_to_device(x2, device)
+                y = _move_to_device(y, device)
                 
                 outputs = self.model(x1, x2)
                 y = y.flatten().long()
@@ -1341,7 +1411,14 @@ class Fed_CLC_client(object):
         self.dataset = dataset
         self.client_id = client_id
         self.tao = tao
-        self.dataloader = DataLoader(self.dataset, batch_size=args.batch, shuffle=True, pin_memory=True)
+        collate_fn = mando_collate_fn if self.args.model_type == "MANDO" else None
+        self.dataloader = DataLoader(
+            self.dataset,
+            batch_size=args.batch,
+            shuffle=True,
+            pin_memory=True,
+            collate_fn=collate_fn
+        )
 
     def get_parameters(self):
         return self.model.state_dict()
@@ -1350,10 +1427,7 @@ class Fed_CLC_client(object):
         print(f"loss is {self.result['loss']}")
 
     def train(self):
-        if self.args.model_type == "CBGRU":
-            lr = self.args.cbgru_local_lr
-        elif self.args.model_type == "CGE":
-            lr = self.args.cge_local_lr
+        lr = get_local_lr(self.args)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
 
         self.result = dict()
@@ -1361,11 +1435,14 @@ class Fed_CLC_client(object):
         self.result['sample'] = len(self.dataloader)
 
         self.model.train()
-        for epoch in range(self.args.cbgru_local_epoch):
+        for epoch in range(get_local_epoch(self.args)):
             self.result['loss'] = 0
-            for x1, x2, y in self.dataloader:
+            for batch in self.dataloader:
                 optimizer.zero_grad()
-                x1, x2, y = x1.to(device), x2.to(device), y.to(device)
+                x1, x2, y, _ = _unpack_batch(batch)
+                x1 = _move_to_device(x1, device)
+                x2 = _move_to_device(x2, device)
+                y = _move_to_device(y, device)
                 outputs = self.model(x1, x2)
                 y = y.flatten().long()
                 loss = self.criterion(outputs, y)
@@ -1445,7 +1522,13 @@ class Fed_CLC_client(object):
         self.avai_dataset = copy.deepcopy(self.dataset)
         self.avai_dataset.names = names
         self.avai_dataset.labels = labels
-        self.data_loader = DataLoader(self.avai_dataset, batch_size=self.args.batch, shuffle=True)
+        collate_fn = mando_collate_fn if self.args.model_type == "MANDO" else None
+        self.data_loader = DataLoader(
+            self.avai_dataset,
+            batch_size=self.args.batch,
+            shuffle=True,
+            collate_fn=collate_fn
+        )
 
     def confidence(self):
         outputSofma = self.outputSof()
@@ -1476,11 +1559,19 @@ class Fed_CLC_client(object):
 
         self.model.eval()
         device = self.args.device
-        val_loader = DataLoader(dataset, batch_size=self.args.batch, shuffle=False, pin_memory=True)
+        collate_fn = mando_collate_fn if self.args.model_type == "MANDO" else None
+        val_loader = DataLoader(
+            dataset,
+            batch_size=self.args.batch,
+            shuffle=False,
+            pin_memory=True,
+            collate_fn=collate_fn
+        )
         outputs_list = []
         with torch.no_grad():
             for x1, x2, labels in val_loader:
-                x1, x2 = x1.to(device), x2.to(device)
+                x1 = _move_to_device(x1, device)
+                x2 = _move_to_device(x2, device)
                 batch_out = self.model(x1, x2)
                 outputs_list.append(batch_out.cpu()) # Move to CPU immediately
 
@@ -1496,7 +1587,14 @@ class Fed_CLC_client(object):
 
     def data_correct(self):
         self.avai_dataset.labels = np.array(self.sudo_labels)[self.reserve]
-        self.data_loader = DataLoader(self.avai_dataset, batch_size=self.args.batch, shuffle=True, pin_memory=True)
+        collate_fn = mando_collate_fn if self.args.model_type == "MANDO" else None
+        self.data_loader = DataLoader(
+            self.avai_dataset,
+            batch_size=self.args.batch,
+            shuffle=True,
+            pin_memory=True,
+            collate_fn=collate_fn
+        )
 
 
 

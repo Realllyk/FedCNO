@@ -10,16 +10,18 @@ import torch.nn.functional as F
 from options import parse_args
 from data_processing.dataloader_manager import gen_client_ds, gen_valid_dl
 from data_processing.preprocessing import coordinate_sys_noise_clusters
-from models.ClassiFilerNet import ClassiFilerNet
-from models.CGE_Variants import CGEVariant
+from models.model_factory import build_model
 from trainers.server import ARFL_Server
 from trainers.client import Fed_ARFL_client
 from global_test import global_test
 import random
+import time
 
 
 if __name__ == '__main__':
     args = parse_args()
+    if args.model_type == "MANDO" and args.vul != "tod":
+        raise ValueError("MANDO only supports --vul tod in this project.")
     INPUT_SIZE, TIME_STAMP = 100, 300
     criterion = nn.CrossEntropyLoss()
     if args.device != "cpu":
@@ -41,7 +43,7 @@ if __name__ == '__main__':
         torch.cuda.manual_seed_all(args.seed)
 
     # -------------------------------------------------------------------------
-    # 系统性噪声协调 (Systemic Noise Coordination)
+    # 绯荤粺鎬у櫔澹板崗璋?(Systemic Noise Coordination)
     # -------------------------------------------------------------------------
     assigned_clusters_dict, global_cluster_map = coordinate_sys_noise_clusters(
         args.client_num, 
@@ -62,8 +64,7 @@ if __name__ == '__main__':
             args.vul, 
             args.noise_type, 
             noise_rates[i], 
-            args.random_noise, 
-            args.num_neigh,
+                        args.num_neigh,
             assigned_clusters=assigned_clusters_dict,
             global_cluster_map=global_cluster_map,
             n_clusters=args.n_clusters,
@@ -79,6 +80,8 @@ if __name__ == '__main__':
                 client_dir = os.path.join(args.data_dir, f"graduate_client_split/cbgru/{args.vul}/client_{i}/")
             elif args.model_type == 'CGE':
                 client_dir = os.path.join(args.data_dir, f"graduate_client_split/cge/{args.vul}/client_{i}/")
+            elif args.model_type == 'MANDO':
+                client_dir = os.path.join(args.data_dir, f"graduate_client_split/mando/{args.vul}/client_{i}/")
             else:
                 client_dir = os.path.join(args.data_dir, f"graduate_client_split/{args.vul}/client_{i}/")
             labels_path = os.path.join(client_dir, f"label_train.csv")
@@ -101,10 +104,7 @@ if __name__ == '__main__':
         clients.append(client)
     total_num_samples = sum([c.num_train_samples for c in clients])
 
-    if args.model_type == "CBGRU":
-        global_model = ClassiFilerNet(INPUT_SIZE, TIME_STAMP)
-    elif args.model_type == "CGE":
-        global_model = CGEVariant()
+    global_model = build_model(args, INPUT_SIZE, TIME_STAMP)
     global_model = global_model.to(device)
     server = ARFL_Server(
         args,
@@ -114,11 +114,20 @@ if __name__ == '__main__':
         clients,
         total_num_samples
     )
+    run_timestamp = time.strftime("%Y%m%d_%H%M%S")
+    valid_interval = max(1, int(getattr(args, "arfl_valid_interval", getattr(args, "lgv_valid_interval", 1))))
+    early_stop_patience = int(getattr(args, "arfl_early_stop_patience", getattr(args, "lgv_early_stop_patience", 15)))
+    early_stop_min_delta = float(getattr(args, "arfl_early_stop_min_delta", getattr(args, "lgv_early_stop_min_delta", 1e-4)))
+    best_val_f1 = -1.0
+    best_epoch = -1
+    no_improve_rounds = 0
+    best_global_state = copy.deepcopy(server.global_model.state_dict())
 
     for c in clients:
         c.model = copy.deepcopy(global_model)
         c.test()
 
+    valid_dl = gen_valid_dl(args.model_type, args.vul, data_dir=args.data_dir)
     for epoch in range(args.epoch):
         print(f"Epoch {epoch} Training:------------------")
         server.initialize_epoch_updates(epoch)
@@ -143,10 +152,60 @@ if __name__ == '__main__':
         # Clean up after update_alpha (which calls test())
         torch.cuda.empty_cache()
         gc.collect()
+        if epoch % valid_interval == 0:
+            print(f"\n--- Validation at Epoch {epoch} ---")
+            valid_result = global_test(
+                server.global_model,
+                valid_dl,
+                criterion,
+                args,
+                args.lab_name,
+                run_timestamp=run_timestamp,
+                save_result=True,
+                tag='valid',
+                epoch=epoch
+            )
+            current_val_f1 = valid_result['F1 score']
+            if current_val_f1 > (best_val_f1 + early_stop_min_delta):
+                best_val_f1 = current_val_f1
+                best_epoch = epoch
+                no_improve_rounds = 0
+                best_global_state = copy.deepcopy(server.global_model.state_dict())
+                print(f"[EARLY_STOP] improved at epoch {epoch}, best_f1={best_val_f1:.6f}")
+            else:
+                no_improve_rounds += 1
+                print(f"[EARLY_STOP] no improvement rounds: {no_improve_rounds}/{early_stop_patience}")
+                if early_stop_patience > 0 and no_improve_rounds >= early_stop_patience:
+                    print(f"[EARLY_STOP] triggered at epoch {epoch}, restoring best epoch {best_epoch}")
+                    break
+            print("-------------------------------\n")
+    
+    if best_epoch >= 0:
+        server.global_model.load_state_dict(best_global_state)
+        print(f"[EARLY_STOP] best model restored from epoch {best_epoch} (best_f1={best_val_f1:.6f})")
+    else:
+        best_epoch = args.epoch - 1
+        print("[EARLY_STOP] no validation checkpoint captured, using final epoch model.")
     
     # test_dl = gen_cbgru_valid_dl(args.vul, 0, args.batch)
-    test_dl = gen_valid_dl(args.model_type, args.vul, args.data_dir)
-    global_test(server.global_model, test_dl, criterion, args, args.lab_name)
+    test_dl = gen_valid_dl(args.model_type, args.vul, data_dir=args.data_dir)
+    global_test(
+        server.global_model,
+        test_dl,
+        criterion,
+        args,
+        args.lab_name,
+        run_timestamp=run_timestamp,
+        save_result=True,
+        tag='test',
+        epoch=best_epoch,
+        extra_info={
+            "best_valid_f1": best_val_f1,
+            "early_stop_patience": early_stop_patience,
+            "early_stop_min_delta": early_stop_min_delta,
+            "valid_interval": valid_interval
+        }
+    )
 
 
 
@@ -155,3 +214,5 @@ if __name__ == '__main__':
         
 
         
+
+

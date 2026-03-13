@@ -27,9 +27,8 @@ if __name__ == '__main__':
         noise_rates = random.sample([0.2, 0.2, 0.2, 0.2, 0.3, 0.3, 0.3, 0.3], 8)
 
     for i in range(args.client_num):
-        ds = gen_lgv_ds(i, args.vul, noise_types[i],noise_rates[i], args.random_noise)
+        ds = gen_lgv_ds(i, args.vul, noise_types[i], noise_rates[i], args.num_neigh, args.model_type)
         train_ds.append(ds)
-    print(args.random_noise)
     test_dl = gen_cbgru_valid_dl(args.vul)
     
     # initialize Server
@@ -122,3 +121,5 @@ if __name__ == '__main__':
     global_test(server.global_model, test_dl, criterion, args, args.lab_name)
         
     
+
+

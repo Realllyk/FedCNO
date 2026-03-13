@@ -22,3 +22,12 @@ def get_local_lr(args):
         return args.mando_local_lr
     raise ValueError(f"Unsupported model_type: {args.model_type}")
 
+
+def get_local_epoch(args):
+    if args.model_type == "CBGRU":
+        return args.cbgru_local_epoch
+    if args.model_type == "CGE":
+        return args.cge_local_epoch
+    if args.model_type == "MANDO":
+        return args.mando_local_epoch
+    raise ValueError(f"Unsupported model_type: {args.model_type}")

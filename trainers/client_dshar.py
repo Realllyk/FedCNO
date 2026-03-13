@@ -6,6 +6,8 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
+from data_processing.mando_collate import mando_collate_fn
+from models.model_factory import get_local_epoch, get_local_lr
 
 
 class _IndexedSubset(Dataset):
@@ -19,7 +21,19 @@ class _IndexedSubset(Dataset):
     def __getitem__(self, idx):
         original_idx = self.indices[idx]
         x1, x2, y = self.dataset[original_idx]
-        return x1, x2, y, original_idx
+        return x1, x2, y
+
+
+def _move_to_device(obj, device):
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        return {k: _move_to_device(v, device) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_move_to_device(v, device) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_move_to_device(v, device) for v in obj)
+    return obj
 
 
 class Fed_DSHAR_client(object):
@@ -72,6 +86,18 @@ class Fed_DSHAR_client(object):
         return self.model.state_dict()
 
     def _augment(self, x):
+        if isinstance(x, dict):
+            out = dict(x)
+            node_feat = out.get("node_features", None)
+            if node_feat is None:
+                return out
+            if self.args.dshar_aug_noise_std > 0:
+                node_feat = node_feat + torch.randn_like(node_feat) * self.args.dshar_aug_noise_std
+            if self.args.dshar_aug_mask_ratio > 0:
+                mask = (torch.rand_like(node_feat) > self.args.dshar_aug_mask_ratio).float()
+                node_feat = node_feat * mask
+            out["node_features"] = node_feat
+            return out
         if self.args.dshar_aug_noise_std > 0:
             x = x + torch.randn_like(x) * self.args.dshar_aug_noise_std
         if self.args.dshar_aug_mask_ratio > 0:
@@ -83,10 +109,10 @@ class Fed_DSHAR_client(object):
         total_loss = 0.0
         total_batches = 0
 
-        for x1, x2, y, _ in clean_loader:
-            x1 = x1.to(self.device)
-            x2 = x2.to(self.device)
-            y = y.to(self.device).flatten().long()
+        for x1, x2, y in clean_loader:
+            x1 = _move_to_device(x1, self.device)
+            x2 = _move_to_device(x2, self.device)
+            y = _move_to_device(y, self.device).flatten().long()
 
             aug1_x1 = self._augment(x1)
             aug1_x2 = self._augment(x2)
@@ -123,9 +149,9 @@ class Fed_DSHAR_client(object):
 
         self.teacher_model.eval()
 
-        for x1, x2, _, _ in noisy_loader:
-            x1 = x1.to(self.device)
-            x2 = x2.to(self.device)
+        for x1, x2, _ in noisy_loader:
+            x1 = _move_to_device(x1, self.device)
+            x2 = _move_to_device(x2, self.device)
 
             with torch.no_grad():
                 teacher_logits = self.teacher_model(x1, x2)
@@ -151,27 +177,27 @@ class Fed_DSHAR_client(object):
         return avg_loss, total_selected
 
     def train(self, clean_indices, noisy_indices):
-        if self.args.model_type == "CBGRU":
-            lr = self.args.cbgru_local_lr
-        else:
-            lr = self.args.cge_local_lr
+        lr = get_local_lr(self.args)
 
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=self.args.weight_decay)
         self.model.to(self.device)
         self.model.train()
+        collate_fn = mando_collate_fn if self.args.model_type == "MANDO" else None
 
         clean_loader = DataLoader(
             _IndexedSubset(self.dataset, clean_indices),
             batch_size=self.args.batch,
             shuffle=True,
-            pin_memory=True
+            pin_memory=True,
+            collate_fn=collate_fn
         ) if len(clean_indices) > 0 else None
 
         noisy_loader = DataLoader(
             _IndexedSubset(self.dataset, noisy_indices),
             batch_size=self.args.batch,
             shuffle=True,
-            pin_memory=True
+            pin_memory=True,
+            collate_fn=collate_fn
         ) if len(noisy_indices) > 0 else None
 
         round_loss = 0.0
@@ -179,7 +205,7 @@ class Fed_DSHAR_client(object):
         noisy_loss_meter = 0.0
         pseudo_selected = 0
 
-        for _ in range(self.args.cbgru_local_epoch):
+        for _ in range(get_local_epoch(self.args)):
             clean_loss = 0.0
             noisy_loss = 0.0
             selected = 0
@@ -202,7 +228,7 @@ class Fed_DSHAR_client(object):
             self.tb_writer.add_scalar("pseudo/selected", selected, self.tb_global_step)
             self.tb_global_step += 1
 
-        denom = max(self.args.cbgru_local_epoch, 1)
+        denom = max(get_local_epoch(self.args), 1)
         self.result = {
             "loss": round_loss / denom,
             "clean_loss": clean_loss_meter / denom,

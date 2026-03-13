@@ -16,11 +16,27 @@ import concurrent.futures
 from options import parse_args
 from trainers.client import Fed_Corr_client
 from trainers.server import Server
-from models.ClassiFilerNet import ClassiFilerNet
-from models.CGE_Variants import CGEVariant
+from models.model_factory import build_model
+from data_processing.mando_collate import mando_collate_fn
 from data_processing.dataloader_manager import gen_whole_dataset, gen_valid_dl
 
 from global_test import global_test
+
+
+def _move_to_device(obj, device):
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        return {k: _move_to_device(v, device) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_move_to_device(v, device) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_move_to_device(v, device) for v in obj)
+    return obj
+
+
+def _get_eval_collate_fn(args):
+    return mando_collate_fn if args.model_type == "MANDO" else None
 
 
 def setup_seed(seed):
@@ -60,8 +76,17 @@ def lid_term(X, batch, k=20):
 def get_output(dataloader, model, args, criterion):
         model.eval()
         with torch.no_grad():
-            for i, (x1, x2, y) in enumerate(dataloader):
-                x1, x2, y = x1.to(args.device), x2.to(args.device), y.to(args.device)
+            for i, batch in enumerate(dataloader):
+                if len(batch) == 3:
+                    x1, x2, y = batch
+                elif len(batch) == 4:
+                    x1, x2, y, _ = batch
+                else:
+                    raise ValueError(f"Unexpected batch structure with length={len(batch)}")
+
+                x1 = _move_to_device(x1, args.device)
+                x2 = _move_to_device(x2, args.device)
+                y = _move_to_device(y, args.device)
                 y = y.long()
 
                 outputs = model(x1, x2)
@@ -110,7 +135,12 @@ def train_fed_corr_client(idx, args, global_model, criterion, dataset_client, ru
     # 注意：原代码使用 client.dataloader (shuffle=True) 进行 get_output，
     # 这会导致输出的顺序与 sample_idx 不对应，从而导致 LID_whole 和 loss_whole 赋值错位。
     # 这里修正为使用 shuffle=False 的 dataloader 进行评估。
-    eval_dl = DataLoader(dataset_client, batch_size=args.batch, shuffle=False)
+    eval_dl = DataLoader(
+        dataset_client,
+        batch_size=args.batch,
+        shuffle=False,
+        collate_fn=_get_eval_collate_fn(args)
+    )
     local_output, loss = get_output(eval_dl, client.model, args, criterion)
     
     # 释放显存
@@ -179,10 +209,7 @@ if __name__ == "__main__":
     LID_accumulative_client = np.zeros(args.client_num)
 
     # set Server
-    if args.model_type == "CBGRU":
-        global_model = ClassiFilerNet(INPUT_SIZE, TIME_STAMP)
-    elif args.model_type == "CGE":
-        global_model = CGEVariant()
+    global_model = build_model(args, INPUT_SIZE, TIME_STAMP)
     global_model = global_model.to(args.device)
     server = Server(
         args,
@@ -289,7 +316,12 @@ if __name__ == "__main__":
                 )
                 loss = np.array(loss_accumulative_whole[sample_idx])
                 # 这里也需要修正顺序问题
-                eval_dl = DataLoader(dataset_client, batch_size=args.batch, shuffle=False)
+                eval_dl = DataLoader(
+                    dataset_client,
+                    batch_size=args.batch,
+                    shuffle=False,
+                    collate_fn=_get_eval_collate_fn(args)
+                )
                 local_output, _ = get_output(eval_dl, client.model, args, criterion)
                 
                 relabel_idx = (-loss).argsort()[:int(len(sample_idx) * estimated_noisy_level[idx] * args.relabel_ratio)]
@@ -349,7 +381,12 @@ if __name__ == "__main__":
             for idx in noisy_set:
                 sample_idx = np.array(data_indices[idx])
                 dataset_client = Subset(whole_ds, sample_idx)
-                dl_client = DataLoader(dataset_client, batch_size=args.batch, shuffle=False)
+                dl_client = DataLoader(
+                    dataset_client,
+                    batch_size=args.batch,
+                    shuffle=False,
+                    collate_fn=_get_eval_collate_fn(args)
+                )
                 glob_output, _ = get_output(dl_client, server.global_model, args, criterion)
                 y_predicted = np.argmax(glob_output, axis=1)
                 relabel_idx = np.where(np.max(glob_output, axis=1) > args.confidence_thres)[0]
@@ -365,6 +402,13 @@ if __name__ == "__main__":
     print("----------------------STAGE 3--------------------------------")
     # test_dl = gen_cbgru_valid_dl(args.vul, 0, args.batch)
     test_dl = gen_valid_dl(args.model_type, args.vul, data_dir=args.data_dir)
+    valid_interval = max(1, int(getattr(args, "lgv_valid_interval", 1)))
+    early_stop_patience = int(getattr(args, "lgv_early_stop_patience", 15))
+    early_stop_min_delta = float(getattr(args, "lgv_early_stop_min_delta", 1e-4))
+    best_val_f1 = -1.0
+    best_epoch = -1
+    no_improve_rounds = 0
+    best_global_state = copy.deepcopy(server.global_model.state_dict())
 
     for rnd in range(args.rounds2):
         idxs_users = np.random.choice(range(args.client_num), m, replace=False, p = prob)
@@ -390,5 +434,56 @@ if __name__ == "__main__":
 
         server.average_weights()
         global_round_counter += 1
+        if rnd % valid_interval == 0:
+            print(f"\n--- Validation at Round {rnd} ---")
+            valid_result = global_test(
+                server.global_model,
+                test_dl,
+                criterion,
+                args,
+                args.lab_name,
+                reduction='none',
+                run_timestamp=run_timestamp,
+                save_result=True,
+                tag='valid',
+                epoch=rnd
+            )
+            current_val_f1 = valid_result['F1 score']
+            if current_val_f1 > (best_val_f1 + early_stop_min_delta):
+                best_val_f1 = current_val_f1
+                best_epoch = rnd
+                no_improve_rounds = 0
+                best_global_state = copy.deepcopy(server.global_model.state_dict())
+                print(f"[EARLY_STOP] improved at round {rnd}, best_f1={best_val_f1:.6f}")
+            else:
+                no_improve_rounds += 1
+                print(f"[EARLY_STOP] no improvement rounds: {no_improve_rounds}/{early_stop_patience}")
+                if early_stop_patience > 0 and no_improve_rounds >= early_stop_patience:
+                    print(f"[EARLY_STOP] triggered at round {rnd}, restoring best round {best_epoch}")
+                    break
     
-    global_test(server.global_model, test_dl, criterion, args, args.lab_name, 'none')
+    if best_epoch >= 0:
+        server.global_model.load_state_dict(best_global_state)
+        print(f"[EARLY_STOP] best model restored from round {best_epoch} (best_f1={best_val_f1:.6f})")
+    else:
+        best_epoch = args.rounds2 - 1
+        print("[EARLY_STOP] no validation checkpoint captured, using final round model.")
+
+    global_test(
+        server.global_model,
+        test_dl,
+        criterion,
+        args,
+        args.lab_name,
+        reduction='none',
+        run_timestamp=run_timestamp,
+        save_result=True,
+        tag='test',
+        epoch=best_epoch,
+        extra_info={
+            "best_valid_f1": best_val_f1,
+            "early_stop_patience": early_stop_patience,
+            "early_stop_min_delta": early_stop_min_delta,
+            "valid_interval": valid_interval
+        }
+    )

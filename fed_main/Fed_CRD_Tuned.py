@@ -18,6 +18,9 @@ from global_test import global_test
 import random
 import time
 import concurrent.futures
+import json
+from pathlib import Path
+from sklearn.metrics import confusion_matrix
 from utils.crd_diag_logger import CRDDiagLogger
 
 
@@ -100,14 +103,150 @@ def train_crd_client(client_id, client, global_model, ema_model, criterion):
     return client_id, delta, q_k, num_samples, result, loss
 
 
+def _move_to_device(obj, device):
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        return {k: _move_to_device(v, device) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_move_to_device(v, device) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_move_to_device(v, device) for v in obj)
+    return obj
+
+
+def _unpack_batch(batch):
+    if len(batch) == 3:
+        return batch[0], batch[1], batch[2]
+    if len(batch) >= 4:
+        return batch[0], batch[1], batch[2]
+    raise ValueError(f"Unexpected batch length={len(batch)} in threshold eval")
+
+
+def _safe_div(numerator, denominator):
+    if denominator == 0:
+        return 0.0
+    return numerator / denominator
+
+
+def _binary_eval_with_threshold(model, dataloader, criterion, args, threshold):
+    """
+    Evaluate binary classifier by thresholding positive-class probability.
+    """
+    model.eval()
+    all_predictions = []
+    all_targets = []
+    total_loss = 0.0
+    with torch.no_grad():
+        for batch in dataloader:
+            x1, x2, y = _unpack_batch(batch)
+            x1 = _move_to_device(x1, args.device)
+            x2 = _move_to_device(x2, args.device)
+            y = _move_to_device(y, args.device).flatten().long()
+
+            logits = model(x1, x2)
+            loss = criterion(logits, y)
+            total_loss += float(loss.item())
+
+            probs = torch.softmax(logits, dim=1)
+            pos_prob = probs[:, 1]
+            pred = (pos_prob >= threshold).long()
+            all_predictions.extend(pred.flatten().tolist())
+            all_targets.extend(y.flatten().tolist())
+
+    tn, fp, fn, tp = confusion_matrix(all_targets, all_predictions, labels=[0, 1]).ravel()
+    accuracy = _safe_div(tp + tn, tp + tn + fp + fn)
+    precision = _safe_div(tp, tp + fp)
+    recall = _safe_div(tp, tp + fn)
+    f1 = _safe_div(2 * precision * recall, precision + recall)
+    avg_loss = _safe_div(total_loss, len(dataloader))
+    return {
+        "threshold": float(threshold),
+        "Averge Loss": float(avg_loss),
+        "Accuracy": float(accuracy),
+        "False positive rate(FPR)": float(_safe_div(fp, fp + tn)),
+        "False negative rate(FNR)": float(_safe_div(fn, fn + tp)),
+        "Recall(TPR)": float(recall),
+        "Precision": float(precision),
+        "F1 score": float(f1),
+    }
+
+
+def _parse_threshold_grid(args):
+    """
+    Parse threshold list from options.py argument --binary_threshold_grid.
+    """
+    raw = str(getattr(args, "binary_threshold_grid", "0.5"))
+    thresholds = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        val = float(part)
+        thresholds.append(min(0.99, max(0.01, val)))
+    if not thresholds:
+        thresholds = [0.5]
+    # Keep deterministic ordering and de-dup for reproducibility.
+    return sorted(set(thresholds))
+
+
+def _save_threshold_result(args, run_timestamp, result_dict):
+    """
+    Save threshold-tuned test result without touching existing result schema.
+    """
+    noise_rate_str = str(args.noise_rate)
+    result_path = Path(os.path.realpath(__file__)).parents[1].joinpath(
+        "graduate_final_result",
+        args.lab_name,
+        args.model_type,
+        args.noise_type,
+        noise_rate_str
+    )
+    Path.mkdir(result_path, parents=True, exist_ok=True)
+
+    base_file_name = f"{args.vul}_result_threshold.json"
+    if args.noise_type == "fn_noise":
+        base_file_name = f"fn_{base_file_name}"
+    elif args.noise_type == "diff_noise":
+        base_file_name = f"diff_{base_file_name}"
+    elif args.noise_type == "sys_noise":
+        base_file_name = f"sys_{base_file_name}"
+
+    file_path = result_path.joinpath(base_file_name)
+    if file_path.exists():
+        try:
+            data = json.loads(file_path.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                data = [data]
+        except Exception:
+            data = []
+    else:
+        data = []
+
+    payload = {
+        "tag": "test_threshold",
+        "time": run_timestamp,
+        "hparams": {k: v for k, v in vars(args).items()},
+    }
+    payload.update(result_dict)
+    data.append(payload)
+    file_path.write_text(json.dumps(data, ensure_ascii=False, indent=4), encoding="utf-8")
+
+
 if __name__ == '__main__':
     args = parse_args()
     if args.model_type == "MANDO" and args.vul != "tod":
         raise ValueError("MANDO only supports --vul tod in this project.")
     input_size, time_steps = 100, 300
     
-    print(f"Starting FedCRD with {args.vul}, Noise: {args.noise_type} ({args.noise_rate})")
+    print(f"Starting FedCRD-Tuned with {args.vul}, Noise: {args.noise_type} ({args.noise_rate})")
     print(f"Training on device: {args.device}")
+    print(
+        f"[TUNED_CONFIG] workers={args.num_workers}, "
+        f"crd_valid_interval={max(1, int(getattr(args, 'lgv_valid_interval', 1)))}, "
+        f"crd_patience={int(getattr(args, 'lgv_early_stop_patience', 0))}, "
+        f"crd_min_delta={float(getattr(args, 'lgv_early_stop_min_delta', 1e-4))}"
+    )
 
     # Setup Random Seeds
     if args.diff == True:
@@ -294,6 +433,15 @@ if __name__ == '__main__':
         
     print("Initialization Complete. Starting Training...")
 
+    # CRD stage early-stop (reuse options.py existing Fed_LGV early-stop args)
+    crd_valid_interval = max(1, int(getattr(args, "lgv_valid_interval", 1)))
+    crd_early_stop_patience = int(getattr(args, "lgv_early_stop_patience", 0))
+    crd_early_stop_min_delta = float(getattr(args, "lgv_early_stop_min_delta", 1e-4))
+    crd_best_val_f1 = -1.0
+    crd_best_epoch = -1
+    crd_no_improve_rounds = 0
+    crd_best_global_state = copy.deepcopy(server.global_model.state_dict())
+
     # Training Loop
     for epoch in range(args.epoch):
         print(f"\n--- Epoch {epoch} ---")
@@ -302,7 +450,7 @@ if __name__ == '__main__':
         updates_list = [] # Store (client_id, delta, q_k, n_k)
         
         futures = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
             for client_id in range(args.client_num):
                 futures.append(executor.submit(train_crd_client, client_id, clients[client_id], server.global_model, server.ema_model, criterion))
             
@@ -319,9 +467,9 @@ if __name__ == '__main__':
         server.aggregate(updates_list)
         
         # Validation
-        if epoch % 5 == 0 or epoch == args.epoch - 1:
+        if epoch % crd_valid_interval == 0 or epoch == args.epoch - 1:
              print(f"Validation at Epoch {epoch}...")
-             global_test(
+             crd_valid_result = global_test(
                 server.global_model, 
                 valid_dl, 
                 criterion, 
@@ -332,8 +480,79 @@ if __name__ == '__main__':
                 tag='valid',
                 epoch=epoch
             )
-            
-    # Final Test
-    print("\n--- Final Testing ---")
-    global_test(server.global_model, test_dl, criterion, args, f"Fed_CRD", run_timestamp=run_timestamp)
+             current_crd_f1 = crd_valid_result.get('F1 score', float('nan'))
+             if current_crd_f1 is not None and not np.isnan(current_crd_f1):
+                 if current_crd_f1 > (crd_best_val_f1 + crd_early_stop_min_delta):
+                     crd_best_val_f1 = current_crd_f1
+                     crd_best_epoch = epoch
+                     crd_no_improve_rounds = 0
+                     crd_best_global_state = copy.deepcopy(server.global_model.state_dict())
+                     print(f"[CRD_EARLY_STOP] improved at epoch {epoch}, best_f1={crd_best_val_f1:.6f}")
+                 else:
+                     crd_no_improve_rounds += 1
+                     print(
+                         f"[CRD_EARLY_STOP] no improvement rounds: "
+                         f"{crd_no_improve_rounds}/{crd_early_stop_patience}"
+                     )
+                     if crd_early_stop_patience > 0 and crd_no_improve_rounds >= crd_early_stop_patience:
+                         print(
+                             f"[CRD_EARLY_STOP] triggered at epoch {epoch}, "
+                             f"restoring best epoch {crd_best_epoch}"
+                         )
+                         break
 
+    if crd_best_epoch >= 0:
+        server.global_model.load_state_dict(crd_best_global_state)
+        print(
+            f"[CRD_EARLY_STOP] best CRD model restored from epoch {crd_best_epoch} "
+            f"(best_f1={crd_best_val_f1:.6f})"
+        )
+    else:
+        print("[CRD_EARLY_STOP] no CRD validation checkpoint captured, using final CRD model.")
+            
+    # Final Test (argmax baseline)
+    print("\n--- Final Testing ---")
+    global_test(server.global_model, test_dl, criterion, args, f"Fed_CRD_Tuned", run_timestamp=run_timestamp)
+
+    # Optional threshold tuning:
+    # 1) select best threshold on validation set by F1
+    # 2) evaluate test set with selected threshold
+    if getattr(args, "binary_threshold_tune", False):
+        threshold_grid = _parse_threshold_grid(args)
+        print(f"[THRESH_TUNE] threshold grid: {threshold_grid}")
+        best_threshold = 0.5
+        best_valid_result = None
+        best_valid_f1 = -1.0
+        for threshold in threshold_grid:
+            valid_result = _binary_eval_with_threshold(
+                server.global_model,
+                valid_dl,
+                criterion,
+                args,
+                threshold
+            )
+            if valid_result["F1 score"] > best_valid_f1:
+                best_valid_f1 = valid_result["F1 score"]
+                best_valid_result = valid_result
+                best_threshold = threshold
+
+        print(
+            f"[THRESH_TUNE] selected threshold={best_threshold:.3f}, "
+            f"valid_f1={best_valid_f1:.6f}, valid_precision={best_valid_result['Precision']:.6f}, "
+            f"valid_recall={best_valid_result['Recall(TPR)']:.6f}"
+        )
+
+        threshold_test_result = _binary_eval_with_threshold(
+            server.global_model,
+            test_dl,
+            criterion,
+            args,
+            best_threshold
+        )
+        print(
+            f"[THRESH_TUNE][TEST] threshold={best_threshold:.3f}, "
+            f"f1={threshold_test_result['F1 score']:.6f}, "
+            f"precision={threshold_test_result['Precision']:.6f}, "
+            f"recall={threshold_test_result['Recall(TPR)']:.6f}"
+        )
+        _save_threshold_result(args, run_timestamp, threshold_test_result)

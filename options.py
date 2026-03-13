@@ -1,4 +1,5 @@
 import argparse
+from utils.seed import set_global_seed
 
 def parse_args():
     parser = argparse.ArgumentParser("Local model Experiments")
@@ -101,6 +102,19 @@ def parse_args():
         '--cbgru_local_epoch',
         default=8,
         type=int
+    )
+
+    parser.add_argument(
+        '--cge_local_epoch',
+        default=8,
+        type=int
+    )
+
+    parser.add_argument(
+        '--mando_local_epoch',
+        default=8,
+        type=int,
+        help='Local epochs for MANDO'
     )
 
     parser.add_argument(
@@ -259,9 +273,30 @@ def parse_args():
     )
 
     parser.add_argument(
+        '--warmup_valid_interval',
+        type=int,
+        default=1,
+        help='Validation interval (in warm-up epochs) for Fed_Avg warm-up stage'
+    )
+
+    parser.add_argument(
+        '--warmup_early_stop_patience',
+        type=int,
+        default=0,
+        help='Early stop patience for warm-up stage; <=0 disables early stopping'
+    )
+
+    parser.add_argument(
+        '--warmup_early_stop_min_delta',
+        type=float,
+        default=1e-4,
+        help='Minimum validation F1 improvement to reset warm-up early stopping'
+    )
+
+    parser.add_argument(
         '--random_noise',
         action= 'store_true',
-        help= "generate random noise for training this time"
+        help= "deprecated no-op; kept for backward compatibility"
     )
 
     parser.add_argument(
@@ -346,7 +381,7 @@ def parse_args():
     parser.add_argument(
         '--n_clusters',
         type=int,
-        default=20,
+        default=15,
         help='Number of clusters for systemic noise generation'
     )
 
@@ -376,6 +411,39 @@ def parse_args():
         type=float,
         default=0.8,
         help='Maximum value for alpha in Fed_LGV client'
+    )
+
+    parser.add_argument(
+        '--lgv_valid_interval',
+        type=int,
+        default=1,
+        help='Validation interval (in global epochs) for Fed_LGV'
+    )
+
+    parser.add_argument(
+        '--lgv_early_stop_patience',
+        type=int,
+        default=15,
+        help='Early stop patience for Fed_LGV; <=0 disables early stopping'
+    )
+
+    parser.add_argument(
+        '--lgv_early_stop_min_delta',
+        type=float,
+        default=1e-4,
+        help='Minimum validation F1 improvement to reset Fed_LGV early stopping'
+    )
+
+    parser.add_argument(
+        '--exit_after_warmup_test',
+        action='store_true',
+        help='Exit program after warm-up test in Fed_LGV'
+    )
+
+    parser.add_argument(
+        '--run_warmup_global_test',
+        action='store_true',
+        help='Run and save one global_test on test set right after warm-up stage; default disabled'
     )
 
     # FedCRD Arguments
@@ -487,6 +555,21 @@ def parse_args():
         help='number of workers for parallel training'
     )
 
+    # Binary threshold tuning (used by fed_main/Fed_CRD_Tuned.py).
+    # This is useful when argmax gives high precision but lower recall.
+    parser.add_argument(
+        '--binary_threshold_tune',
+        action='store_true',
+        help='enable threshold search on validation set and evaluate test set with selected threshold'
+    )
+
+    parser.add_argument(
+        '--binary_threshold_grid',
+        type=str,
+        default='0.30,0.35,0.40,0.45,0.50,0.55,0.60,0.65,0.70',
+        help='comma-separated threshold candidates for positive-class probability in binary classification'
+    )
+
     # FedELC Arguments
     parser.add_argument('--epoch_of_stage1', type=int, default=20, help='number of epochs for stage 1')
     parser.add_argument('--lambda_pencil', type=float, default=1000, help='lamda for pencil loss')
@@ -509,4 +592,6 @@ def parse_args():
     parser.add_argument('--dshar_early_stop_patience', type=int, default=10, help='early stopping patience on validation F1; <=0 disables')
     parser.add_argument('--dshar_early_stop_min_delta', type=float, default=1e-4, help='minimum F1 improvement to reset early stopping counter')
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    set_global_seed(args.seed)
+    return args

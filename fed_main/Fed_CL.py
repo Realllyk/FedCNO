@@ -11,8 +11,7 @@ from data_processing.dataloader_manager import gen_cbgru_valid_dl, gen_client_ds
 from data_processing.preprocessing import coordinate_sys_noise_clusters
 from trainers.server import CLC_Server
 from trainers.client import Fed_CLC_client
-from models.ClassiFilerNet import ClassiFilerNet
-from models.CGE_Variants import CGEVariant
+from models.model_factory import build_model
 from global_test import global_test
 import random
 import concurrent.futures
@@ -44,7 +43,7 @@ def train_one_client_clc(client_id, args, global_model, dataset, tao, conf_score
             client.confidence()
             client.data_holdout(conf_score)
             
-            # 手动清理 confidence 产生的中间变量
+            # 鎵嬪姩娓呯悊 confidence 浜х敓鐨勪腑闂村彉閲?
             if hasattr(client, 'avai_dataset'):
                 del client.avai_dataset
             torch.cuda.empty_cache()
@@ -56,7 +55,7 @@ def train_one_client_clc(client_id, args, global_model, dataset, tao, conf_score
             client.data_holdout(conf_score)
             client.data_correct()
             
-            # 手动清理
+            # 鎵嬪姩娓呯悊
             if hasattr(client, 'avai_dataset'):
                 del client.avai_dataset
             torch.cuda.empty_cache()
@@ -84,6 +83,8 @@ def train_one_client_clc(client_id, args, global_model, dataset, tao, conf_score
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.model_type == "MANDO" and args.vul != "tod":
+        raise ValueError("MANDO only supports --vul tod in this project.")
     INPUT_SIZE, TIME_STAMP = 100, 300
     
     if args.diff == True:
@@ -100,7 +101,7 @@ if __name__ == "__main__":
         torch.cuda.manual_seed_all(args.seed)
 
     # -------------------------------------------------------------------------
-    # 系统性噪声协调 (Systemic Noise Coordination)
+    # 绯荤粺鎬у櫔澹板崗璋?(Systemic Noise Coordination)
     # -------------------------------------------------------------------------
     assigned_clusters_dict, global_cluster_map = coordinate_sys_noise_clusters(
         args.client_num, 
@@ -121,8 +122,7 @@ if __name__ == "__main__":
             args.vul, 
             args.noise_type, 
             noise_rates[i], 
-            args.random_noise, 
-            args.num_neigh,
+                        args.num_neigh,
             assigned_clusters=assigned_clusters_dict,
             global_cluster_map=global_cluster_map,
             n_clusters=args.n_clusters,
@@ -136,10 +136,7 @@ if __name__ == "__main__":
     criterion = nn.CrossEntropyLoss()
     
     # Initialize Global Model
-    if args.model_type == "CBGRU":
-        global_model = ClassiFilerNet(INPUT_SIZE, TIME_STAMP)
-    elif args.model_type == "CGE":
-        global_model = CGEVariant()
+    global_model = build_model(args, INPUT_SIZE, TIME_STAMP)
     global_model = global_model.to(args.device)
 
     # Initialize Server
@@ -183,7 +180,7 @@ if __name__ == "__main__":
             confs.append(conf)
             classnums.append(classnum)
             
-            # 显式清理 temp_client
+            # 鏄惧紡娓呯悊 temp_client
             if hasattr(temp_client, 'sfm_Mat'):
                 del temp_client.sfm_Mat
             if hasattr(temp_client, 'tb_writer'):
@@ -213,3 +210,5 @@ if __name__ == "__main__":
     # clc.correct_stage() is omitted as it was commented out in original file.
 
     global_test(server.global_model, test_dl, criterion, args, args.lab_name)
+
+

@@ -14,13 +14,25 @@ from sklearn.metrics import f1_score
 
 from options import parse_args
 from data_processing.dataloader_manager import gen_client_ds, gen_valid_dl
+from data_processing.mando_collate import mando_collate_fn
 from data_processing.preprocessing import coordinate_sys_noise_clusters
-from models.ClassiFilerNet import ClassiFilerNet
-from models.CGE_Variants import CGEVariant
+from models.model_factory import build_model
 from trainers.server import Server
 from trainers.client import Fed_Avg_client
 from trainers.client_dshar import Fed_DSHAR_client
 from global_test import global_test
+
+
+def _move_to_device(obj, device):
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        return {k: _move_to_device(v, device) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_move_to_device(v, device) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_move_to_device(v, device) for v in obj)
+    return obj
 
 
 def set_seed(seed):
@@ -57,13 +69,14 @@ def tune_dshar_for_timestamp_cbgru(args):
 
 def split_client_dataset_by_mr(dataset, mr_model, args):
     mr_model.eval()
-    loader = DataLoader(dataset, batch_size=args.batch, shuffle=False, pin_memory=True)
+    collate_fn = mando_collate_fn if args.model_type == "MANDO" else None
+    loader = DataLoader(dataset, batch_size=args.batch, shuffle=False, pin_memory=True, collate_fn=collate_fn)
     all_conf = []
 
     with torch.no_grad():
         for x1, x2, _ in loader:
-            x1 = x1.to(args.device)
-            x2 = x2.to(args.device)
+            x1 = _move_to_device(x1, args.device)
+            x2 = _move_to_device(x2, args.device)
             logits = mr_model(x1, x2)
             probs = torch.softmax(logits, dim=1)
             confidence = torch.max(probs, dim=1)[0]
@@ -98,9 +111,9 @@ def evaluate_model(model, dataloader, criterion, args):
 
     with torch.no_grad():
         for x1, x2, y in dataloader:
-            x1 = x1.to(args.device)
-            x2 = x2.to(args.device)
-            y = y.to(args.device).flatten().long()
+            x1 = _move_to_device(x1, args.device)
+            x2 = _move_to_device(x2, args.device)
+            y = _move_to_device(y, args.device).flatten().long()
             outputs = model(x1, x2)
             loss = criterion(outputs, y)
             total_loss += loss.item()
@@ -166,6 +179,8 @@ def train_dshar_client(
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.model_type == "MANDO" and args.vul != "tod":
+        raise ValueError("MANDO only supports --vul tod in this project.")
     args = tune_dshar_for_timestamp_cbgru(args)
     if args.seed is not None:
         set_seed(int(args.seed))
@@ -194,7 +209,6 @@ if __name__ == "__main__":
             args.vul,
             args.noise_type,
             noise_rates[client_id],
-            args.random_noise,
             args.num_neigh,
             assigned_clusters=assigned_clusters_dict,
             global_cluster_map=global_cluster_map,
@@ -204,10 +218,7 @@ if __name__ == "__main__":
         )
         train_ds.append(ds)
 
-    if args.model_type == "CBGRU":
-        global_model = ClassiFilerNet(input_size, time_stamp)
-    else:
-        global_model = CGEVariant()
+    global_model = build_model(args, input_size, time_stamp)
     global_model = global_model.to(args.device)
 
     criterion = nn.CrossEntropyLoss()
@@ -310,3 +321,5 @@ if __name__ == "__main__":
         print(f"[EARLY_STOP] best model restored from epoch {best_epoch} (best_f1={best_val_f1:.6f})")
 
     global_test(server.global_model, valid_dl, criterion, args, args.lab_name, run_timestamp=run_timestamp)
+
+

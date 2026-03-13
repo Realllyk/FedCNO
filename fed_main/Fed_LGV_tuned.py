@@ -7,12 +7,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
 from options import parse_args
 from data_processing.dataloader_manager import gen_lgv_ds, gen_test_dl, gen_cbgru_dl, gen_client_ds, gen_valid_dl
 from data_processing.preprocessing import compute_global_clusters, coordinate_sys_noise_clusters
-from models.model_factory import build_model
+from models.model_factory import build_model, get_local_epoch, get_local_lr
 from trainers.server import LGV_server
-from trainers.client import Fed_LGV_client, Fed_Avg_client
+from trainers.client import Fed_LGV_client, Fed_Avg_client, _unpack_batch, _move_to_device, lgv_mando_collate_fn
 from global_test import global_test
 import random
 import time
@@ -74,6 +75,182 @@ def train_lgv_client(client_id, client, global_model, global_weight):
     gc.collect()
     
     return client_id, weights, num_samples, result
+
+
+class LGVServerPosF1(LGV_server):
+    """
+    Tuned server for LGV:
+    - Keep validation metric consistent with early-stop metric (positive-class F1).
+    - Use the same positive-class F1 signal to auto-tune global_weight.
+    """
+    def autotune_gr(self, valid_dl):
+        self.global_model.eval()
+        total_loss = 0.0
+        tp, fp, fn = 0, 0, 0
+
+        base_dir = os.path.join(
+            "runs",
+            self.args.lab_name,
+            self.args.model_type,
+            self.args.noise_type,
+            str(self.args.noise_rate),
+            self.args.vul,
+            self.run_timestamp,
+        )
+        valid_log_dir = os.path.join(base_dir, "valid")
+        os.makedirs(valid_log_dir, exist_ok=True)
+        log_file_path = os.path.join(valid_log_dir, "loss_log.txt")
+        if not os.path.exists(log_file_path):
+            with open(log_file_path, "w") as f:
+                f.write("Timestamp,Validation_Loss,Positive_F1\n")
+
+        with torch.no_grad():
+            for batch in valid_dl:
+                x1, x2, y, _ = _unpack_batch(batch)
+                x1 = _move_to_device(x1, self.args.device)
+                x2 = _move_to_device(x2, self.args.device)
+                y = _move_to_device(y, self.args.device).flatten().long()
+                outputs = self.global_model(x1, x2)
+                loss = self.criterion(outputs, y)
+                total_loss += loss.item()
+
+                pred = torch.argmax(outputs, dim=1)
+                tp += torch.sum((pred == 1) & (y == 1)).item()
+                fp += torch.sum((pred == 1) & (y == 0)).item()
+                fn += torch.sum((pred == 0) & (y == 1)).item()
+
+        avg_loss = total_loss / len(valid_dl)
+        precision = tp / (tp + fp + 1e-12)
+        recall = tp / (tp + fn + 1e-12)
+        current_f1 = 2.0 * precision * recall / (precision + recall + 1e-12)
+
+        current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_file_path, "a") as f:
+            f.write(f"{current_time},{avg_loss},{current_f1}\n")
+
+        if self.previous_f1 is not None:
+            if current_f1 > self.previous_f1:
+                self.global_weight += self.args.adjustment_factor
+            elif current_f1 < self.previous_f1:
+                self.global_weight -= self.args.adjustment_factor
+            self.global_weight = max(0.1, min(self.global_weight, 0.75))
+            print(
+                f"Auto-tuning (positive F1): {self.previous_f1:.4f} -> {current_f1:.4f}, "
+                f"New Global Weight: {self.global_weight:.4f}"
+            )
+        self.previous_f1 = current_f1
+
+
+class FedLGVClientTuned(Fed_LGV_client):
+    """
+    Tuned LGV client:
+    1) local epoch uses model-adaptive get_local_epoch(args), instead of fixed CBGRU epoch.
+    2) pseudo-label update is confidence-gated to avoid low-confidence noisy relabeling.
+    3) keep consistency-score weighted loss behavior from original LGV flow.
+    """
+    def train(self):
+        # 1) Fix global snapshot for uncertainty estimation.
+        self.fixed_global_model.load_state_dict(self.model.state_dict())
+        self.fixed_global_model.eval()
+
+        # 2) Estimate uncertainty and derive per-sample alpha.
+        collate_fn = lgv_mando_collate_fn if self.args.model_type == "MANDO" else None
+        eval_dl = DataLoader(
+            self.dataset,
+            batch_size=self.args.batch,
+            shuffle=False,
+            pin_memory=True,
+            collate_fn=collate_fn,
+        )
+        all_uncertainties = []
+        with torch.no_grad():
+            for batch in eval_dl:
+                x1, x2, _, _ = _unpack_batch(batch)
+                x1 = _move_to_device(x1, self.device)
+                x2 = _move_to_device(x2, self.device)
+                global_logits = self.fixed_global_model(x1, x2)
+                global_probs = F.softmax(global_logits, dim=1)
+                entropy = -torch.sum(global_probs * torch.log(global_probs + 1e-8), dim=1)
+                max_entropy = np.log(global_probs.shape[1])
+                all_uncertainties.append((entropy / max_entropy).cpu())
+
+        all_uncertainties = torch.cat(all_uncertainties, dim=0)
+        alpha_raw = all_uncertainties ** 2
+        alpha_min = self.args.alpha_min
+        alpha_max = max(0.0, min(self.global_weight, self.args.alpha_max))
+        alpha = torch.clamp(alpha_raw, alpha_min, alpha_max).unsqueeze(1).to(self.device)
+
+        if self.global_prob_labels.device != self.device:
+            self.global_prob_labels = self.global_prob_labels.to(self.device)
+        if self.local_prob_labels.device != self.device:
+            self.local_prob_labels = self.local_prob_labels.to(self.device)
+
+        # 3) Pseudo-label fusion with confidence gate.
+        #    Only update sample label when fused pseudo-label confidence >= threshold.
+        #    This reduces unstable relabeling in noisy rounds.
+        with torch.no_grad():
+            fused_prob = alpha * self.global_prob_labels + (1.0 - alpha) * self.local_prob_labels
+            fused_prob = F.softmax(fused_prob, dim=1)
+            pseudo_labels = torch.argmax(fused_prob, dim=-1)
+            confidence = torch.max(fused_prob, dim=1).values
+            conf_th = float(getattr(self.args, "dshar_pseudo_threshold", 0.8))
+            old_labels = torch.tensor(self.dataset.labels, dtype=torch.long, device=self.device)
+            update_mask = confidence >= conf_th
+            final_labels = torch.where(update_mask, pseudo_labels, old_labels)
+            self.dataset.labels = final_labels.detach().cpu().numpy()
+
+        # 4) Local training using model-adaptive local epoch.
+        dl = DataLoader(
+            self.dataset,
+            batch_size=self.args.batch,
+            shuffle=True,
+            pin_memory=True,
+            collate_fn=collate_fn,
+        )
+        lr = get_local_lr(self.args)
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=self.args.weight_decay)
+
+        # Keep acceptance ratio for diagnosis in logs/TensorBoard.
+        self.result = {"sample": len(self.dataset), "pseudo_accept_rate": float(update_mask.float().mean().item())}
+        self.model.train()
+        for epoch in range(get_local_epoch(self.args)):
+            self.result["loss"] = 0.0
+            for batch in dl:
+                optimizer.zero_grad()
+                x1, x2, y, agr = _unpack_batch(batch)
+                x1 = _move_to_device(x1, self.device)
+                x2 = _move_to_device(x2, self.device)
+                y = _move_to_device(y, self.device).flatten().long()
+                agr = _move_to_device(agr, self.device) if agr is not None else torch.ones_like(y, dtype=torch.float32, device=self.device)
+
+                outputs = self.model(x1, x2)
+                loss = self.criterion(outputs, y)
+                _, predictions = torch.max(outputs, 1)
+                correct_predictions = predictions == y
+                weights = torch.ones_like(y, dtype=torch.float32, device=self.device)
+                weights += agr * (~correct_predictions).float()
+                weights -= 0.5 * agr * correct_predictions.float()
+
+                if self.args.consistency_score:
+                    if loss.dim() == 0:
+                        loss = loss * weights.mean()
+                    else:
+                        loss = (weights * loss).mean()
+                elif loss.dim() > 0:
+                    loss = loss.mean()
+
+                self.result["loss"] += loss.item()
+                loss.backward()
+                clip_value = 1.0 if getattr(self.args, "vul", "") == "timestamp" else 10
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_value)
+                optimizer.step()
+
+            avg_loss = self.result["loss"] / len(dl)
+            self.tb_writer.add_scalar("loss/train", avg_loss, self.tb_global_step)
+            self.tb_writer.add_scalar("pseudo/accept_rate", self.result["pseudo_accept_rate"], self.tb_global_step)
+            with open(self.log_file_path, "a") as f:
+                f.write(f"{self.tb_global_step},{epoch},{avg_loss}\n")
+            self.tb_global_step += 1
 
 
 if __name__ == '__main__':
@@ -159,7 +336,7 @@ if __name__ == '__main__':
     global_model = build_model(args, input_size, time_steps)
     global_model = global_model.to(args.device)
     run_timestamp = time.strftime("%Y%m%d_%H%M%S")
-    server = LGV_server(
+    server = LGVServerPosF1(
         args,
         global_model,
         args.device,
@@ -250,18 +427,22 @@ if __name__ == '__main__':
     else:
         print("[WARMUP_EARLY_STOP] no warmup validation checkpoint captured, using final warmup model.")
 
-    # print("\n--- WarmUp Phase Finished. Testing with Fed_Avg lab_name ---")
-    # global_test(
-    #     server.global_model, 
-    #     test_dl, 
-    #     criterion, 
-    #     args, 
-    #     f"WarmUp_FedAvg", 
-    #     reduction='mean', 
-    #     run_timestamp=run_timestamp, 
-    #     save_result=True,
-    #     tag='test'
-    # )
+    # Optional warm-up test:
+    # - Controlled by --run_warmup_global_test (default: False).
+    # - When enabled, save one FedAvg-stage test result before entering LGV stage.
+    if getattr(args, "run_warmup_global_test", False):
+        print("\n--- WarmUp Phase Finished. Testing with Fed_Avg lab_name ---")
+        global_test(
+            server.global_model,
+            test_dl,
+            criterion,
+            args,
+            "WarmUp_FedAvg",
+            reduction='mean',
+            run_timestamp=run_timestamp,
+            save_result=True,
+            tag='test'
+        )
     args.lab_name = original_lab_name
     print("-----------------------------------------------------------\n")
     if args.exit_after_warmup_test:
@@ -313,7 +494,7 @@ if __name__ == '__main__':
     clients = []
 
     for i in range(args.client_num):
-        client = Fed_LGV_client(
+        client = FedLGVClientTuned(
             args,
             nn.CrossEntropyLoss(weight=class_weights, reduction=reduction),
             copy.deepcopy(server.global_model),
@@ -426,4 +607,3 @@ if __name__ == '__main__':
     )
         
     
-

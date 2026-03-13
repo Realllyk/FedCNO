@@ -16,8 +16,7 @@ import torch.nn.functional as F
 from options import parse_args
 from data_processing.dataloader_manager import gen_client_ds, gen_valid_dl
 from data_processing.preprocessing import coordinate_sys_noise_clusters
-from models.ClassiFilerNet import ClassiFilerNet
-from models.CGE_Variants import CGEVariant
+from models.model_factory import build_model
 from trainers.server_elc import ELC_Server
 from trainers.client_elc import Fed_ELC_client
 from global_test import global_test
@@ -122,6 +121,8 @@ def train_one_client_elc(client_id, args, global_model, criterion, dataset, is_n
 
 if __name__ == '__main__':
     args = parse_args()
+    if args.model_type == "MANDO" and args.vul != "tod":
+        raise ValueError("MANDO only supports --vul tod in this project.")
     args = add_elc_args(args)
     args = tune_elc_for_timestamp_cbgru(args)
     
@@ -163,8 +164,7 @@ if __name__ == '__main__':
             args.vul, 
             args.noise_type, 
             noise_rates[i], 
-            args.random_noise, 
-            args.num_neigh,
+                        args.num_neigh,
             assigned_clusters=assigned_clusters_dict,
             global_cluster_map=global_cluster_map,
             n_clusters=args.n_clusters,
@@ -192,10 +192,7 @@ if __name__ == '__main__':
 
     criterion = nn.CrossEntropyLoss()
 
-    if args.model_type == "CBGRU":
-        global_model = ClassiFilerNet(INPUT_SIZE, TIME_STAMP)
-    elif args.model_type == "CGE":
-        global_model = CGEVariant()
+    global_model = build_model(args, INPUT_SIZE, TIME_STAMP)
     global_model = global_model.to(args.device)
 
     server = ELC_Server(
@@ -302,3 +299,5 @@ if __name__ == '__main__':
         print(f"Epoch {epoch} finished. Stage {stage}")
 
     global_test(server.global_model, test_dl, criterion, args, args.lab_name, run_timestamp=run_timestamp)
+
+

@@ -134,7 +134,6 @@ if __name__ == '__main__':
             args.vul, 
             args.noise_type, 
             noise_rates[i], 
-            args.random_noise, 
             args.num_neigh,
             assigned_clusters=assigned_clusters_dict, 
             global_cluster_map=global_cluster_map,
@@ -265,7 +264,6 @@ if __name__ == '__main__':
             args.vul, 
             args.noise_type, 
             args.noise_rate, 
-            args.random_noise, 
             args.num_neigh, 
             args.model_type, 
             assigned_clusters=assigned_clusters_dict, 
@@ -276,8 +274,6 @@ if __name__ == '__main__':
             data_dir=args.data_dir
         )
         train_ds.append(ds)
-    print(args.random_noise)
-    
     # initialize Client
     # -------------------------------------------------------------------------
     # 初始化 LGV 客户端

@@ -27,7 +27,91 @@ def _unpack_batch(batch):
     raise ValueError(f"Unexpected batch length={len(batch)} in global_test")
 
 
-def global_test(model, dataloader, criterion, args, method, reduction='mean', run_timestamp=None, save_result=True, tag='test', epoch=None):
+def _serialize_hparams(args):
+    hparams = {}
+    for k, v in vars(args).items():
+        try:
+            json.dumps(v)
+            hparams[k] = v
+        except TypeError:
+            hparams[k] = str(v)
+    return hparams
+
+
+def _load_result_list(result_file_path):
+    if not os.path.exists(result_file_path):
+        return []
+    try:
+        data = None
+        for attempt in range(8):
+            try:
+                with open(result_file_path, 'r', encoding='utf-8') as file:
+                    data = json.load(file)
+                break
+            except PermissionError:
+                # Windows can transiently lock files under concurrent writers.
+                if attempt == 7:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+        if isinstance(data, dict):
+            return [data]
+        if isinstance(data, list):
+            return data
+        return []
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        corrupt_path = f"{result_file_path}.corrupt.{int(time.time())}"
+        try:
+            os.replace(result_file_path, corrupt_path)
+            print(f"[WARN] Corrupted result json moved to: {corrupt_path}")
+        except OSError:
+            pass
+        return []
+
+
+def _atomic_dump_json(result_file_path, data):
+    tmp_path = f"{result_file_path}.{os.getpid()}.{time.time_ns()}.tmp"
+    with open(tmp_path, 'w', encoding='utf-8') as file:
+        json.dump(data, file, ensure_ascii=False, indent=4)
+
+    for attempt in range(12):
+        try:
+            os.replace(tmp_path, result_file_path)
+            return
+        except PermissionError:
+            if attempt == 11:
+                break
+            time.sleep(0.05 * (attempt + 1))
+
+    # Fallback for stubborn locks: try direct write with retries.
+    for attempt in range(8):
+        try:
+            with open(result_file_path, 'w', encoding='utf-8') as file:
+                json.dump(data, file, ensure_ascii=False, indent=4)
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            return
+        except PermissionError:
+            if attempt == 7:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def global_test(
+    model,
+    dataloader,
+    criterion,
+    args,
+    method,
+    reduction='mean',
+    run_timestamp=None,
+    save_result=True,
+    tag='test',
+    epoch=None,
+    extra_info=None
+):
     all_predictions = []
     all_targets = []
     total_loss = 0
@@ -60,6 +144,8 @@ def global_test(model, dataloader, criterion, args, method, reduction='mean', ru
     result_dict['tag'] = tag
     if epoch is not None:
         result_dict['epoch'] = epoch
+    if extra_info is not None:
+        result_dict['extra_info'] = extra_info
 
     # Add timestamp to result_dict if provided
     if run_timestamp:
@@ -73,7 +159,8 @@ def global_test(model, dataloader, criterion, args, method, reduction='mean', ru
     result_dict['False negative rate(FNR)'] = fn / (fn + tp)
     result_dict['Recall(TPR)'] = tp / (tp + fn)
     result_dict['Precision'] = tp / (tp + fp)
-    result_dict['F1 score'] = (2 * result_dict['Precision'] * result_dict['Recall(TPR)']) / (result_dict['Precision'] + result_dict['Recall(TPR)'])\
+    result_dict['F1 score'] = (2 * result_dict['Precision'] * result_dict['Recall(TPR)']) / (result_dict['Precision'] + result_dict['Recall(TPR)'])
+    result_dict['hparams'] = _serialize_hparams(args)
     
     print(f"[{tag.upper()}] Accuracy: ", result_dict['Accuracy'])
     print(f"[{tag.upper()}] False positive rate(FPR): ", result_dict['False positive rate(FPR)'])
@@ -83,7 +170,7 @@ def global_test(model, dataloader, criterion, args, method, reduction='mean', ru
     print(f"[{tag.upper()}] F1 score: ", result_dict['F1 score'])
     
     if not save_result:
-        return
+        return result_dict
 
     # result_path = Path(os.path.realpath(__file__)).parents[0].joinpath(
     #     'merge_result',
@@ -107,7 +194,7 @@ def global_test(model, dataloader, criterion, args, method, reduction='mean', ru
     current_noise_type = args.noise_type
     
     result_path = Path(os.path.realpath(__file__)).parents[0].joinpath(
-        'graduate_result',
+        'graduate_final_result',
         lab_name,
         args.model_type,
         current_noise_type,
@@ -145,19 +232,11 @@ def global_test(model, dataloader, criterion, args, method, reduction='mean', ru
     
     result_file_path = result_path.joinpath(file_name)
         
-    if os.path.exists(result_file_path):
-        with open(result_file_path, 'r', encoding='utf-8') as file:
-            data = json.load(file)
-            if type(data) is dict:
-                data = [data]
-            data.append(result_dict)
-        with open(result_file_path, 'w', encoding='utf-8') as file:
-            json.dump(data, file, ensure_ascii=False, indent=4)
-    else:
-        data = [result_dict]
-        file = open(str(result_file_path), "w")
-        json.dump(data, file, ensure_ascii=False, indent=4)
-        file.close()
+    data = _load_result_list(result_file_path)
+    data.append(result_dict)
+    _atomic_dump_json(result_file_path, data)
+
+    return result_dict
             
             
 

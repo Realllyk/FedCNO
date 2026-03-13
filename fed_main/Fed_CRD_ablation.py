@@ -17,8 +17,7 @@ import torch.nn as nn
 from data_processing.dataloader_manager import gen_crd_ds, gen_test_dl, gen_valid_dl
 from data_processing.preprocessing import coordinate_sys_noise_clusters
 from global_test import global_test
-from models.CGE_Variants import CGEVariant
-from models.ClassiFilerNet import ClassiFilerNet
+from models.model_factory import build_model
 from options import parse_args
 from trainers.client import Fed_CRD_client
 from trainers.client_ablate import Fed_CRD_client_NoAmb
@@ -88,6 +87,8 @@ def train_crd_client(client_id, client, global_model, ema_model):
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.model_type == "MANDO" and args.vul != "tod":
+        raise ValueError("MANDO only supports --vul tod in this project.")
     input_size, time_steps = 100, 300
 
     mode = str(getattr(args, "crd_ablation_mode", "full")).lower()
@@ -131,7 +132,6 @@ if __name__ == "__main__":
             args.vul,
             args.noise_type,
             noise_rates[i],
-            args.random_noise,
             args.num_neigh,
             args.model_type,
             assigned_clusters=assigned_clusters_dict,
@@ -150,12 +150,7 @@ if __name__ == "__main__":
         class_weights = torch.tensor([1.0, 1.0]).to(args.device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
 
-    if args.model_type == "CBGRU":
-        global_model = ClassiFilerNet(input_size, time_steps)
-    elif args.model_type == "CGE":
-        global_model = CGEVariant()
-    else:
-        raise ValueError(f"Unsupported model_type={args.model_type} for FedCRD ablation.")
+    global_model = build_model(args, input_size, time_steps)
     global_model = global_model.to(args.device)
 
     raw_timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -239,3 +234,5 @@ if __name__ == "__main__":
         save_result=True,
         tag="test",
     )
+
+

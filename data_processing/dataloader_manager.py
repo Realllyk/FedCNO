@@ -22,7 +22,7 @@ def _ensure_mando_vul(vul):
 
 
 # labels_path = os.path.join(client_dir, f"{noise_type}_label_train_{noise_rate*100:03.0f}.csv")
-def gen_cbgru_dl(client_id, vul, noise_type, noise_rate, batch = 16, shuffle=True, random_noise = False, data_dir=None):
+def gen_cbgru_dl(client_id, vul, noise_type, noise_rate, batch = 16, shuffle=True, data_dir=None):
     if data_dir is None:
         raise ValueError("data_dir must be provided")
     # word2vec_dir = f"/root/autodl-tmp/data/cbgru_data/{vul}/word2vec"
@@ -44,10 +44,6 @@ def gen_cbgru_dl(client_id, vul, noise_type, noise_rate, batch = 16, shuffle=Tru
 
     ds = CustomerDataset(word2vec_dir, fastText_dir, labels_path, names_path)
     # 生成随机
-    if random_noise:
-        labels_path = os.path.join(client_dir, "non_noise_label_train_000.csv")
-        noise_labels = gen_noise_labels(names_path, labels_path, noise_type, noise_rate)
-        ds.labels = noise_labels
     dl = DataLoader(ds, batch_size=batch, shuffle=shuffle, pin_memory=True)
     
     return dl, 100, 300
@@ -106,6 +102,8 @@ def gen_whole_dataset(model_type, client_num, vul, noise_type, noise_rates, num_
         return gen_cbgru_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, data_dir)
     if model_type == "CGE":
         return gen_cge_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, data_dir)
+    if model_type == "MANDO":
+        return gen_mando_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, data_dir)
     raise ValueError(f"gen_whole_dataset does not support model_type={model_type}")
 
 
@@ -207,6 +205,62 @@ def gen_cge_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh=0,
     return ds, data_indices
 
 
+def gen_mando_whole_dataset(client_num, vul, noise_type, noise_rates, num_neigh=0, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir=None):
+    if data_dir is None:
+        raise ValueError("data_dir must be provided")
+    _ensure_mando_vul(vul)
+
+    graph_dir = os.path.join(data_dir, f"mando_graph/{vul}")
+    all_names = []
+    all_labels = []
+
+    names_path = os.path.join(data_dir, f"graduate_client_split/mando/{vul}/client_0/contract_name_train.txt")
+    labels_path = os.path.join(data_dir, f"graduate_client_split/mando/{vul}/client_0/label_train.csv")
+    ds = MandoDataset(graph_dir, labels_path, names_path)
+    data_indices = []
+    offset = 0
+
+    for client_id in range(client_num):
+        client_dir = os.path.join(data_dir, f"graduate_client_split/mando/{vul}/client_{client_id}/")
+        names_path = os.path.join(client_dir, "contract_name_train.txt")
+        labels_path = os.path.join(client_dir, "label_train.csv")
+        names = []
+        with open(names_path, "r") as file:
+            lines = file.readlines()
+            for line in lines:
+                name = line.strip().split(".")[0]
+                names.append(name)
+        n_data = len(names)
+        bound = offset + n_data
+        all_names.extend(names)
+
+        if noise_type == 'non_noise' or noise_type == 'fn_noise':
+            noise_labels = gen_noise_labels(names_path, labels_path, noise_type, noise_rates[client_id])
+        elif noise_type == 'sys_noise':
+            pre_feature_dir = resolve_pretrain_feature_dir(data_dir, vul)
+            cluster_indices = assigned_clusters[client_id] if assigned_clusters else None
+            noise_labels = gen_sys_noise_labels_kmeans(
+                names_path,
+                labels_path,
+                pre_feature_dir,
+                noise_rates[client_id],
+                n_clusters=n_clusters,
+                seed=seed,
+                assigned_cluster_indices=cluster_indices,
+                global_cluster_map=global_cluster_map
+            )
+        else:
+            raise ValueError(f"Unsupported noise_type={noise_type}")
+        all_labels.extend(noise_labels)
+
+        data_indices.append(list(range(offset, bound)))
+        offset = bound
+
+    ds.names = all_names
+    ds.labels = all_labels
+    return ds, data_indices
+
+
 def gen_knn_dl(client_id, vul, noise_type, noise_rate, batch, num_neigh):
     embeddings = ['word2vec', 'FastText']
     file_paths = []
@@ -260,22 +314,22 @@ def gen_knn_dl(client_id, vul, noise_type, noise_rate, batch, num_neigh):
     
 
 # 文件生成好的噪声标签
-def gen_lgv_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, model_type, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir=None):
+def gen_lgv_ds(client_id, vul, noise_type, noise_rate, num_neigh, model_type, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir=None):
     if data_dir is None:
         raise ValueError("data_dir must be provided")
     if vul == "tod" and model_type in ("CBGRU", "CGE"):
         raise ValueError("vul='tod' is reserved for model_type='MANDO' only.")
     if model_type == "CBGRU":
-        ds = gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, predefined_labels, data_dir)
+        ds = gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, predefined_labels, data_dir)
     elif model_type == "CGE":
-        ds = gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, predefined_labels, data_dir)
+        ds = gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, predefined_labels, data_dir)
     elif model_type == "MANDO":
-        ds = gen_lgv_mando_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, predefined_labels, data_dir)
+        ds = gen_lgv_mando_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, predefined_labels, data_dir)
         
     return ds
     
 
-def gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir=None):
+def gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir=None):
     if data_dir is None:
         raise ValueError("data_dir must be provided")
     word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
@@ -289,24 +343,23 @@ def gen_lgv_cbgru_ds(client_id, vul, noise_type, noise_rate, random_noise, num_n
     labels_path = os.path.join(client_dir, f"label_train.csv")
     ds = CustomerDataset(word2vec_dir, fastText_dir, labels_path, names_path)
 
-    if random_noise:
-        if predefined_labels is not None:
-            noise_labels = predefined_labels
-        else:
-            if noise_type == 'non_noise' or noise_type == 'fn_noise':
-                noise_labels = gen_noise_labels(names_path, labels_path, noise_type, noise_rate)
-            elif noise_type == 'sys_noise':
-                pre_feature_dir = resolve_pretrain_feature_dir(data_dir, vul)
-                # noise_labels = gen_sys_noise_labels(names_path, labels_path, pre_feature_dir, 'sys_noise', noise_rate, num_neigh)
-                # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
-                cluster_indices = assigned_clusters[client_id] if assigned_clusters else None
-                noise_labels = gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_rate, n_clusters=n_clusters, seed=seed, assigned_cluster_indices=cluster_indices, global_cluster_map=global_cluster_map)
-        ds.labels = noise_labels
+    if predefined_labels is not None:
+        noise_labels = predefined_labels
+    else:
+        if noise_type == 'non_noise' or noise_type == 'fn_noise':
+            noise_labels = gen_noise_labels(names_path, labels_path, noise_type, noise_rate)
+        elif noise_type == 'sys_noise':
+            pre_feature_dir = resolve_pretrain_feature_dir(data_dir, vul)
+            # noise_labels = gen_sys_noise_labels(names_path, labels_path, pre_feature_dir, 'sys_noise', noise_rate, num_neigh)
+            # client_dir = f"./data/4_client_split/{vul}/client_{client_id}/"
+            cluster_indices = assigned_clusters[client_id] if assigned_clusters else None
+            noise_labels = gen_sys_noise_labels_kmeans(names_path, labels_path, pre_feature_dir, noise_rate, n_clusters=n_clusters, seed=seed, assigned_cluster_indices=cluster_indices, global_cluster_map=global_cluster_map)
+    ds.labels = noise_labels
 
     return ds
 
 
-def gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir=None):
+def gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir=None):
     if data_dir is None:
         raise ValueError("data_dir must be provided")
     graph_dir = os.path.join(data_dir, f'cge_data/{vul}/graph_feature')
@@ -332,21 +385,21 @@ def gen_lgv_cge_ds(client_id, vul, noise_type, noise_rate, random_noise, num_nei
     return ds
 
 
-def gen_crd_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, model_type, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir=None):
+def gen_crd_ds(client_id, vul, noise_type, noise_rate, num_neigh, model_type, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir=None):
     """
     Generate dataset for FedCRD.
     FedCRD requires the dataset to support KNN operations (feature access), similar to FedLGV.
     """
-    return gen_lgv_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, model_type, assigned_clusters, global_cluster_map, n_clusters, seed, predefined_labels, data_dir)
+    return gen_lgv_ds(client_id, vul, noise_type, noise_rate, num_neigh, model_type, assigned_clusters, global_cluster_map, n_clusters, seed, predefined_labels, data_dir)
 
 
-def gen_client_ds(model_type, client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir=None):
+def gen_client_ds(model_type, client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir=None):
     if data_dir is None:
         raise ValueError("data_dir must be provided")
     if vul == "tod" and model_type in ("CBGRU", "CGE"):
         raise ValueError("vul='tod' is reserved for model_type='MANDO' only.")
     if model_type == 'CBGRU':
-        ds = gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, data_dir)
+        ds = gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, data_dir)
     elif model_type == 'CGE':
         ds = gen_cge_client_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters, global_cluster_map, n_clusters, seed, data_dir)
     elif model_type == 'MANDO':
@@ -354,7 +407,7 @@ def gen_client_ds(model_type, client_id, vul, noise_type, noise_rate, random_noi
     return ds
 
 
-def gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir=None):
+def gen_cbgru_client_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, data_dir=None):
     if data_dir is None:
         raise ValueError("data_dir must be provided")
     word2vec_dir = os.path.join(data_dir, f"cbgru_data/{vul}/word2vec")
@@ -476,7 +529,7 @@ def gen_mando_client_ds(client_id, vul, noise_type, noise_rate, num_neigh, assig
     return ds
 
 
-def gen_lgv_mando_ds(client_id, vul, noise_type, noise_rate, random_noise, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir=None):
+def gen_lgv_mando_ds(client_id, vul, noise_type, noise_rate, num_neigh, assigned_clusters=None, global_cluster_map=None, n_clusters=20, seed=42, predefined_labels=None, data_dir=None):
     if data_dir is None:
         raise ValueError("data_dir must be provided")
     _ensure_mando_vul(vul)

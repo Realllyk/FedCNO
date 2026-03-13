@@ -8,13 +8,13 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 import concurrent.futures
+import time
 from options import parse_args
 from data_processing.dataloader_manager import gen_cbgru_valid_dl, gen_client_ds, gen_valid_dl
 from data_processing.preprocessing import coordinate_sys_noise_clusters
 from trainers.server import CLC_Server
 from trainers.client import Fed_CLC_client
-from models.ClassiFilerNet import ClassiFilerNet
-from models.CGE_Variants import CGEVariant
+from models.model_factory import build_model
 from global_test import global_test
 import random
 
@@ -112,6 +112,8 @@ def train_client_correct(client, global_model):
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.model_type == "MANDO" and args.vul != "tod":
+        raise ValueError("MANDO only supports --vul tod in this project.")
     INPUT_SIZE, TIME_STAMP = 100, 300
 
     if args.diff == True:
@@ -128,7 +130,7 @@ if __name__ == "__main__":
         torch.cuda.manual_seed_all(args.seed)
 
     # -------------------------------------------------------------------------
-    # 系统性噪声协调 (Systemic Noise Coordination)
+    # 绯荤粺鎬у櫔澹板崗璋?(Systemic Noise Coordination)
     # -------------------------------------------------------------------------
     assigned_clusters_dict, global_cluster_map = coordinate_sys_noise_clusters(
         args.client_num, 
@@ -148,8 +150,7 @@ if __name__ == "__main__":
             args.vul, 
             args.noise_type, 
             noise_rates[i], 
-            args.random_noise, 
-            args.num_neigh,
+                        args.num_neigh,
             assigned_clusters=assigned_clusters_dict,
             global_cluster_map=global_cluster_map,
             n_clusters=args.n_clusters,
@@ -165,6 +166,8 @@ if __name__ == "__main__":
                 client_dir = os.path.join(args.data_dir, f"graduate_client_split/cbgru/{args.vul}/client_{i}/")
             elif args.model_type == 'CGE':
                 client_dir = os.path.join(args.data_dir, f"graduate_client_split/cge/{args.vul}/client_{i}/")
+            elif args.model_type == 'MANDO':
+                client_dir = os.path.join(args.data_dir, f"graduate_client_split/mando/{args.vul}/client_{i}/")
             else:
                 client_dir = os.path.join(args.data_dir, f"graduate_client_split/{args.vul}/client_{i}/")
             labels_path = os.path.join(client_dir, f"label_train.csv")
@@ -177,16 +180,24 @@ if __name__ == "__main__":
                 print(f"[DEBUG] Client {i}: Label file not found at {labels_path}")
 
     test_dl = gen_valid_dl(args.model_type, args.vul, data_dir=args.data_dir)
+    valid_dl = test_dl
     
     criterion = nn.CrossEntropyLoss()
     
-    if args.model_type == "CBGRU":
-        global_model = ClassiFilerNet(INPUT_SIZE, TIME_STAMP)
-    elif args.model_type == "CGE":
-        global_model = CGEVariant()
+    global_model = build_model(args, INPUT_SIZE, TIME_STAMP)
     global_model = global_model.to(args.device)
 
     server = CLC_Server(args, global_model, args.device, criterion)
+    run_timestamp = time.strftime("%Y%m%d_%H%M%S")
+
+    valid_interval = max(1, int(getattr(args, "clc_valid_interval", getattr(args, "lgv_valid_interval", 1))))
+    early_stop_patience = int(getattr(args, "clc_early_stop_patience", getattr(args, "lgv_early_stop_patience", 15)))
+    early_stop_min_delta = float(getattr(args, "clc_early_stop_min_delta", getattr(args, "lgv_early_stop_min_delta", 1e-4)))
+    best_val_f1 = -1.0
+    best_epoch = -1
+    no_improve_rounds = 0
+    best_global_state = copy.deepcopy(server.global_model.state_dict())
+    early_stop_triggered = False
     
     clients = []
     tao = 0.1
@@ -241,42 +252,128 @@ if __name__ == "__main__":
                 clients[cid].print_loss()
         
         server.average_weights()
+        if epoch % valid_interval == 0:
+            print(f"\n--- Validation at Epoch {epoch} ---")
+            valid_result = global_test(
+                server.global_model,
+                valid_dl,
+                criterion,
+                args,
+                args.lab_name,
+                run_timestamp=run_timestamp,
+                save_result=True,
+                tag='valid',
+                epoch=epoch
+            )
+            current_val_f1 = valid_result['F1 score']
+            if current_val_f1 > (best_val_f1 + early_stop_min_delta):
+                best_val_f1 = current_val_f1
+                best_epoch = epoch
+                no_improve_rounds = 0
+                best_global_state = copy.deepcopy(server.global_model.state_dict())
+                print(f"[EARLY_STOP] improved at epoch {epoch}, best_f1={best_val_f1:.6f}")
+            else:
+                no_improve_rounds += 1
+                print(f"[EARLY_STOP] no improvement rounds: {no_improve_rounds}/{early_stop_patience}")
+                if early_stop_patience > 0 and no_improve_rounds >= early_stop_patience:
+                    print(f"[EARLY_STOP] triggered at epoch {epoch}, restoring best epoch {best_epoch}")
+                    early_stop_triggered = True
+                    break
+            print("-------------------------------\n")
+    if early_stop_triggered:
+        print("[EARLY_STOP] stop remaining training stages.")
 
     # Correct Stage
     print("Correct Stage...")
     correct_done = False
-    for epoch in range(args.first_epochs, args.first_epochs+args.last_epochs):
-        server.initialize_epoch_updates(epoch)
+    if not early_stop_triggered:
+        for epoch in range(args.first_epochs, args.first_epochs+args.last_epochs):
+            server.initialize_epoch_updates(epoch)
         
-        if not correct_done:
-            confs = [None] * args.client_num
-            classnums = [None] * args.client_num
-            with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
-                futures = [executor.submit(client_send_conf, clients[i], server.global_model) for i in range(args.client_num)]
-                for future in concurrent.futures.as_completed(futures):
-                    cid, conf, classnum = future.result()
-                    confs[cid] = conf
-                    classnums[cid] = classnum
+            if not correct_done:
+                confs = [None] * args.client_num
+                classnums = [None] * args.client_num
+                with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
+                    futures = [executor.submit(client_send_conf, clients[i], server.global_model) for i in range(args.client_num)]
+                    for future in concurrent.futures.as_completed(futures):
+                        cid, conf, classnum = future.result()
+                        confs[cid] = conf
+                        classnums[cid] = classnum
             
-            server.receiveconf(confs, classnums)
-            print() # Clear the progress line
-            conf_score = server.conf_agg()
+                server.receiveconf(confs, classnums)
+                print() # Clear the progress line
+                conf_score = server.conf_agg()
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
-                futures = [executor.submit(prepare_client_correct, clients[i], conf_score) for i in range(args.client_num)]
-                for future in concurrent.futures.as_completed(futures):
-                    pass
+                with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
+                    futures = [executor.submit(prepare_client_correct, clients[i], conf_score) for i in range(args.client_num)]
+                    for future in concurrent.futures.as_completed(futures):
+                        pass
             
-            correct_done = True
+                correct_done = True
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
-            futures = [executor.submit(train_client_correct, clients[i], server.global_model) for i in range(args.client_num)]
-            for future in concurrent.futures.as_completed(futures):
-                cid, weights, num_samples, result = future.result()
-                server.save_train_updates(weights, num_samples, result)
-                print(f"client:{cid} correct epoch {epoch} done")
-                clients[cid].print_loss()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
+                futures = [executor.submit(train_client_correct, clients[i], server.global_model) for i in range(args.client_num)]
+                for future in concurrent.futures.as_completed(futures):
+                    cid, weights, num_samples, result = future.result()
+                    server.save_train_updates(weights, num_samples, result)
+                    print(f"client:{cid} correct epoch {epoch} done")
+                    clients[cid].print_loss()
         
-        server.average_weights()
+            server.average_weights()
+            if epoch % valid_interval == 0:
+                print(f"\n--- Validation at Epoch {epoch} ---")
+                valid_result = global_test(
+                    server.global_model,
+                    valid_dl,
+                    criterion,
+                    args,
+                    args.lab_name,
+                    run_timestamp=run_timestamp,
+                    save_result=True,
+                    tag='valid',
+                    epoch=epoch
+                )
+                current_val_f1 = valid_result['F1 score']
+                if current_val_f1 > (best_val_f1 + early_stop_min_delta):
+                    best_val_f1 = current_val_f1
+                    best_epoch = epoch
+                    no_improve_rounds = 0
+                    best_global_state = copy.deepcopy(server.global_model.state_dict())
+                    print(f"[EARLY_STOP] improved at epoch {epoch}, best_f1={best_val_f1:.6f}")
+                else:
+                    no_improve_rounds += 1
+                    print(f"[EARLY_STOP] no improvement rounds: {no_improve_rounds}/{early_stop_patience}")
+                    if early_stop_patience > 0 and no_improve_rounds >= early_stop_patience:
+                        print(f"[EARLY_STOP] triggered at epoch {epoch}, restoring best epoch {best_epoch}")
+                        early_stop_triggered = True
+                        break
+                print("-------------------------------\n")
+        if early_stop_triggered:
+            print("[EARLY_STOP] training terminated in Correct Stage.")
 
-    global_test(server.global_model, test_dl, criterion, args, args.lab_name)
+    if best_epoch >= 0:
+        server.global_model.load_state_dict(best_global_state)
+        print(f"[EARLY_STOP] best model restored from epoch {best_epoch} (best_f1={best_val_f1:.6f})")
+    else:
+        best_epoch = args.first_epochs + args.last_epochs - 1
+        print("[EARLY_STOP] no validation checkpoint captured, using final epoch model.")
+
+    global_test(
+        server.global_model,
+        test_dl,
+        criterion,
+        args,
+        args.lab_name,
+        run_timestamp=run_timestamp,
+        save_result=True,
+        tag='test',
+        epoch=best_epoch,
+        extra_info={
+            "best_valid_f1": best_val_f1,
+            "early_stop_patience": early_stop_patience,
+            "early_stop_min_delta": early_stop_min_delta,
+            "valid_interval": valid_interval
+        }
+    )
+
+

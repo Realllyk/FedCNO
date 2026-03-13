@@ -341,6 +341,8 @@ class CRD_server(Server):
         self.ema_model = copy.deepcopy(model)
         for param in self.ema_model.parameters():
             param.requires_grad = False
+        self.diag_logger = None
+        self.diag_meta = {}
 
     def update_ema_model(self):
         """
@@ -454,7 +456,9 @@ class CRD_server(Server):
                     'client_id': client_id,
                     'delta_k_t': delta_k_t,
                     'n_k': n_k,
+                    'q_k_t': q_k_t,
                     'norm_delta_k_t': norm_delta_k_t,
+                    'cos_sim_k_t': cos_sim,
                     'r_raw_k_t': r_raw_k_t,
                     'r_hat_k_t': r_hat_k_t,
                     'sigma_k_t': sigma_k_t
@@ -483,6 +487,9 @@ class CRD_server(Server):
             delta_k_t_clip = {k: v * clip_scale for k, v in stat['delta_k_t'].items()}
 
             omega_k_t = (stat['n_k'] * stat['r_tilde_k_t']) / omega_denom
+            stat['tau_t'] = tau_t
+            stat['clip_scale_k_t'] = clip_scale
+            stat['omega_k_t'] = omega_k_t
             sum_omega += omega_k_t
 
             for k, v in delta_k_t_clip.items():
@@ -504,6 +511,27 @@ class CRD_server(Server):
             f"tau_t={tau_t:.6f} | mean_r_tilde={mean_r_tilde:.6f} | "
             f"sum_r_tilde={sum_r_tilde:.6f} | sum_omega={sum_omega:.6f}"
         )
+
+        if self.diag_logger is not None:
+            rows = []
+            for stat in client_stats:
+                rows.append(
+                    {
+                        'client_id': stat.get('client_id', -1),
+                        'n_k': stat.get('n_k', 0),
+                        'q_k_t': stat.get('q_k_t', 0.0),
+                        'norm_delta_k_t': stat.get('norm_delta_k_t', 0.0),
+                        'cos_sim_k_t': stat.get('cos_sim_k_t', 0.0),
+                        'r_raw_k_t': stat.get('r_raw_k_t', 0.0),
+                        'r_hat_k_t': stat.get('r_hat_k_t', 0.0),
+                        'sigma_k_t': stat.get('sigma_k_t', 0.0),
+                        'r_tilde_k_t': stat.get('r_tilde_k_t', 0.0),
+                        'tau_t': stat.get('tau_t', tau_t),
+                        'clip_scale_k_t': stat.get('clip_scale_k_t', 1.0),
+                        'omega_k_t': stat.get('omega_k_t', 0.0),
+                    }
+                )
+            self.diag_logger.log_round(self.epoch, self.diag_meta, rows)
         
         # Update EMA model after aggregation
         self.update_ema_model()

@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from data_processing.mando_collate import lgv_mando_collate_fn
-from models.model_factory import get_local_lr
+from models.model_factory import get_local_epoch, get_local_lr
 from trainers.client import Fed_LGV_client, _move_to_device, _unpack_batch
 
 
@@ -75,7 +75,7 @@ class FedLGV_NoUncAlphaClient(Fed_LGV_client):
         self.result['sample'] = len(self.dataset)
 
         self.model.train()
-        for epoch in range(self.args.cbgru_local_epoch):
+        for epoch in range(get_local_epoch(self.args)):
             self.result['loss'] = 0
             for batch in dl:
                 optimizer.zero_grad()
