@@ -1324,7 +1324,7 @@ class Fed_CRD_client(Fed_Avg_client):
         q_loc = torch.mean(self.h_loc).item()
         q_glob = torch.mean(h_glob).item()
         
-        lambda_val = getattr(self.args, 'lambda_crd', 2.0) # Hyperparameter, default 2.0
+        lambda_val = getattr(self.args, 'lambda_q', 2.0) # FedCRD client-side lambda
         
         q_k = min(q_loc, q_glob) * np.exp(-lambda_val * d_tilde)
         

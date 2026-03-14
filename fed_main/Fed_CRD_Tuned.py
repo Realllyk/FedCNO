@@ -242,10 +242,12 @@ if __name__ == '__main__':
     print(f"Starting FedCRD-Tuned with {args.vul}, Noise: {args.noise_type} ({args.noise_rate})")
     print(f"Training on device: {args.device}")
     print(
-        f"[TUNED_CONFIG] workers={args.num_workers}, "
-        f"crd_valid_interval={max(1, int(getattr(args, 'lgv_valid_interval', 1)))}, "
-        f"crd_patience={int(getattr(args, 'lgv_early_stop_patience', 0))}, "
-        f"crd_min_delta={float(getattr(args, 'lgv_early_stop_min_delta', 1e-4))}"
+        f"[TUNED_CONFIG] lambda_q={float(getattr(args, 'lambda_q', 2.0))}, "
+        f"lambda_agg={float(getattr(args, 'lambda_agg', 2.0))}, "
+        f"workers={args.num_workers}, "
+        f"crd_valid_interval={max(1, int(getattr(args, 'crd_valid_interval', 1)))}, "
+        f"crd_patience={int(getattr(args, 'crd_early_stop_patience', 0))}, "
+        f"crd_min_delta={float(getattr(args, 'crd_early_stop_min_delta', 1e-4))}"
     )
 
     # Setup Random Seeds
@@ -436,10 +438,10 @@ if __name__ == '__main__':
         
     print("Initialization Complete. Starting Training...")
 
-    # CRD stage early-stop (reuse options.py existing Fed_LGV early-stop args)
-    crd_valid_interval = max(1, int(getattr(args, "lgv_valid_interval", 1)))
-    crd_early_stop_patience = int(getattr(args, "lgv_early_stop_patience", 0))
-    crd_early_stop_min_delta = float(getattr(args, "lgv_early_stop_min_delta", 1e-4))
+    # CRD stage early-stop (FedCRD-specific args)
+    crd_valid_interval = max(1, int(getattr(args, "crd_valid_interval", 1)))
+    crd_early_stop_patience = int(getattr(args, "crd_early_stop_patience", 0))
+    crd_early_stop_min_delta = float(getattr(args, "crd_early_stop_min_delta", 1e-4))
     crd_best_val_f1 = -1.0
     crd_best_epoch = -1
     crd_no_improve_rounds = 0

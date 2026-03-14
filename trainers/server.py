@@ -331,8 +331,10 @@ class CRD_server(Server):
     ):
         super().__init__(args, model, device, criterion)
         # CRD specific params
-        self.lambda_crd = getattr(args, 'lambda_crd', 2.0)
+        self.lambda_agg = getattr(args, 'lambda_agg', 2.0)
         self.alpha_crd = getattr(args, 'alpha_crd', 0.5)
+        # Legacy placeholders kept intentionally for ablation history.
+        # Current thesis-aligned implementation below does not use C_min/C_max.
         self.C_min = getattr(args, 'C_min', 0.5)
         self.C_max = getattr(args, 'C_max', 2.0)
         
@@ -404,7 +406,7 @@ class CRD_server(Server):
         #         global_update[k] += v.to(self.device) * normalized_weight
 
         # Thesis-aligned implementation:
-        # (1) r_raw_k^t = cos(delta_k^t, delta_bar^t) * exp(-lambda * ||delta_k^t||)
+        # (1) r_raw_k^t = cos(delta_k^t, delta_bar^t) * exp(-lambda_agg * ||delta_k^t||)
         # (2) r_hat_k^t = q_k^t + alpha * r_raw_k^t
         # (3) r_tilde_k^t = softplus(r_hat_k^t) / sum_u softplus(r_hat_u^t)
         # (4) tau^t is rho-quantile of ||delta_k^t|| over participating clients
@@ -443,7 +445,7 @@ class CRD_server(Server):
 
             denom = (norm_delta_k_t * norm_delta_bar_t) + crd_eps
             cos_sim = (torch.dot(delta_k_t_vec, delta_bar_t_vec).item()) / denom
-            r_raw_k_t = cos_sim * np.exp(-self.lambda_crd * norm_delta_k_t)
+            r_raw_k_t = cos_sim * np.exp(-self.lambda_agg * norm_delta_k_t)
             r_hat_k_t = q_k_t + self.alpha_crd * r_raw_k_t
 
             sigma_k_t = torch.nn.functional.softplus(

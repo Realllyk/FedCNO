@@ -455,10 +455,17 @@ def parse_args():
 
     # FedCRD Arguments
     parser.add_argument(
-        '--lambda_crd',
+        '--lambda_q',
         type=float,
         default=2.0,
-        help='Penalty strength for consistency discrepancy in FedCRD'
+        help='Penalty strength for client-side q_k consistency discrepancy in FedCRD'
+    )
+
+    parser.add_argument(
+        '--lambda_agg',
+        type=float,
+        default=2.0,
+        help='Penalty strength for server-side aggregation reliability decay in FedCRD'
     )
 
     parser.add_argument(
@@ -472,14 +479,16 @@ def parse_args():
         '--C_min',
         type=float,
         default=0.5,
-        help='Minimum clipping threshold factor in FedCRD'
+        help='[LEGACY/DEPRECATED] Minimum clipping threshold factor in FedCRD; '
+             'current implementation does not apply this clipping strategy'
     )
 
     parser.add_argument(
         '--C_max',
         type=float,
         default=2.0,
-        help='Maximum clipping threshold factor in FedCRD'
+        help='[LEGACY/DEPRECATED] Maximum clipping threshold factor in FedCRD; '
+             'current implementation does not apply this clipping strategy'
     )
 
     parser.add_argument(
@@ -509,6 +518,27 @@ def parse_args():
         type=float,
         default=1e-8,
         help='numerical stability epsilon used in FedCRD normalization and clipping'
+    )
+
+    parser.add_argument(
+        '--crd_valid_interval',
+        type=int,
+        default=1,
+        help='Validation interval (in global epochs) for FedCRD'
+    )
+
+    parser.add_argument(
+        '--crd_early_stop_patience',
+        type=int,
+        default=15,
+        help='Early stop patience for FedCRD; <=0 disables early stopping'
+    )
+
+    parser.add_argument(
+        '--crd_early_stop_min_delta',
+        type=float,
+        default=1e-4,
+        help='Minimum validation F1 improvement to reset FedCRD early stopping'
     )
 
     parser.add_argument(
