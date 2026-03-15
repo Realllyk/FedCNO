@@ -294,6 +294,20 @@ def parse_args():
     )
 
     parser.add_argument(
+        '--warmup_min_epoch_for_early_stop',
+        type=int,
+        default=0,
+        help='Minimum warm-up epoch before early-stop counter can trigger stopping'
+    )
+
+    parser.add_argument(
+        '--warmup_valid_f1_smooth_window',
+        type=int,
+        default=1,
+        help='Smoothing window size for warm-up validation F1 used by early stopping (1 disables smoothing)'
+    )
+
+    parser.add_argument(
         '--random_noise',
         action= 'store_true',
         help= "deprecated no-op; kept for backward compatibility"
@@ -439,6 +453,20 @@ def parse_args():
         type=float,
         default=1e-4,
         help='Minimum validation F1 improvement to reset Fed_LGV early stopping'
+    )
+
+    parser.add_argument(
+        '--lgv_min_epoch_for_early_stop',
+        type=int,
+        default=5,
+        help='Minimum LGV epoch before early-stop counter can trigger stopping'
+    )
+
+    parser.add_argument(
+        '--lgv_valid_f1_smooth_window',
+        type=int,
+        default=3,
+        help='Smoothing window size for validation F1 used by LGV early stopping (1 disables smoothing)'
     )
 
     parser.add_argument(

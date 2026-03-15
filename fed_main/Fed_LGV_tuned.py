@@ -18,6 +18,7 @@ from global_test import global_test
 import random
 import time
 import concurrent.futures
+from collections import deque
 
 
 def train_warmup_client(client_id, args, global_model, criterion, dataset, run_timestamp):
@@ -361,7 +362,11 @@ if __name__ == '__main__':
     warmup_valid_interval = max(1, int(getattr(args, "warmup_valid_interval", 1)))
     warmup_early_stop_patience = int(getattr(args, "warmup_early_stop_patience", 0))
     warmup_early_stop_min_delta = float(getattr(args, "warmup_early_stop_min_delta", 1e-4))
+    warmup_min_epoch_for_early_stop = int(getattr(args, "warmup_min_epoch_for_early_stop", 0))
+    warmup_valid_f1_smooth_window = max(1, int(getattr(args, "warmup_valid_f1_smooth_window", 1)))
+    warmup_f1_history = deque(maxlen=warmup_valid_f1_smooth_window)
     warmup_best_val_f1 = -1.0
+    warmup_best_val_f1_raw = -1.0
     warmup_best_epoch = -1
     warmup_no_improve_rounds = 0
     warmup_best_global_state = copy.deepcopy(server.global_model.state_dict())
@@ -406,16 +411,31 @@ if __name__ == '__main__':
                 epoch=epoch
             )
             current_warmup_f1 = warmup_valid_result['F1 score']
-            if current_warmup_f1 > (warmup_best_val_f1 + warmup_early_stop_min_delta):
-                warmup_best_val_f1 = current_warmup_f1
+            warmup_f1_history.append(current_warmup_f1)
+            smooth_warmup_f1 = sum(warmup_f1_history) / len(warmup_f1_history)
+            print(
+                f"[WARMUP_EARLY_STOP] raw_f1={current_warmup_f1:.6f}, "
+                f"smooth_f1={smooth_warmup_f1:.6f}, window={warmup_valid_f1_smooth_window}"
+            )
+            if smooth_warmup_f1 > (warmup_best_val_f1 + warmup_early_stop_min_delta):
+                warmup_best_val_f1 = smooth_warmup_f1
+                warmup_best_val_f1_raw = current_warmup_f1
                 warmup_best_epoch = epoch
                 warmup_no_improve_rounds = 0
                 warmup_best_global_state = copy.deepcopy(server.global_model.state_dict())
-                print(f"[WARMUP_EARLY_STOP] improved at epoch {epoch}, best_f1={warmup_best_val_f1:.6f}")
+                print(
+                    f"[WARMUP_EARLY_STOP] improved at epoch {epoch}, "
+                    f"best_smooth_f1={warmup_best_val_f1:.6f}, best_raw_f1={warmup_best_val_f1_raw:.6f}"
+                )
             else:
                 warmup_no_improve_rounds += 1
                 print(f"[WARMUP_EARLY_STOP] no improvement rounds: {warmup_no_improve_rounds}/{warmup_early_stop_patience}")
-                if warmup_early_stop_patience > 0 and warmup_no_improve_rounds >= warmup_early_stop_patience:
+                if epoch < warmup_min_epoch_for_early_stop:
+                    print(
+                        f"[WARMUP_EARLY_STOP] early-stop gating active: "
+                        f"epoch {epoch} < min_epoch {warmup_min_epoch_for_early_stop}"
+                    )
+                elif warmup_early_stop_patience > 0 and warmup_no_improve_rounds >= warmup_early_stop_patience:
                     print(f"[WARMUP_EARLY_STOP] triggered at epoch {epoch}, restoring best epoch {warmup_best_epoch}")
                     break
             print("-----------------------------------------\n")
@@ -423,7 +443,10 @@ if __name__ == '__main__':
     # WarmUp 阶段结束后的测试
     if warmup_best_epoch >= 0:
         server.global_model.load_state_dict(warmup_best_global_state)
-        print(f"[WARMUP_EARLY_STOP] best warmup model restored from epoch {warmup_best_epoch} (best_f1={warmup_best_val_f1:.6f})")
+        print(
+            f"[WARMUP_EARLY_STOP] best warmup model restored from epoch {warmup_best_epoch} "
+            f"(best_smooth_f1={warmup_best_val_f1:.6f}, best_raw_f1={warmup_best_val_f1_raw:.6f})"
+        )
     else:
         print("[WARMUP_EARLY_STOP] no warmup validation checkpoint captured, using final warmup model.")
 
@@ -526,7 +549,11 @@ if __name__ == '__main__':
     valid_interval = max(1, int(getattr(args, "lgv_valid_interval", 1)))
     early_stop_patience = int(getattr(args, "lgv_early_stop_patience", 15))
     early_stop_min_delta = float(getattr(args, "lgv_early_stop_min_delta", 1e-4))
+    min_epoch_for_early_stop = int(getattr(args, "lgv_min_epoch_for_early_stop", 5))
+    valid_f1_smooth_window = max(1, int(getattr(args, "lgv_valid_f1_smooth_window", 3)))
+    val_f1_history = deque(maxlen=valid_f1_smooth_window)
     best_val_f1 = -1.0
+    best_val_f1_raw = -1.0
     best_epoch = -1
     no_improve_rounds = 0
     best_global_state = copy.deepcopy(server.global_model.state_dict())
@@ -566,23 +593,41 @@ if __name__ == '__main__':
                 epoch=epoch
             )
             current_val_f1 = valid_result['F1 score']
-            if current_val_f1 > (best_val_f1 + early_stop_min_delta):
-                best_val_f1 = current_val_f1
+            val_f1_history.append(current_val_f1)
+            smooth_val_f1 = sum(val_f1_history) / len(val_f1_history)
+            print(
+                f"[EARLY_STOP] raw_f1={current_val_f1:.6f}, "
+                f"smooth_f1={smooth_val_f1:.6f}, window={valid_f1_smooth_window}"
+            )
+            if smooth_val_f1 > (best_val_f1 + early_stop_min_delta):
+                best_val_f1 = smooth_val_f1
+                best_val_f1_raw = current_val_f1
                 best_epoch = epoch
                 no_improve_rounds = 0
                 best_global_state = copy.deepcopy(server.global_model.state_dict())
-                print(f"[EARLY_STOP] improved at epoch {epoch}, best_f1={best_val_f1:.6f}")
+                print(
+                    f"[EARLY_STOP] improved at epoch {epoch}, "
+                    f"best_smooth_f1={best_val_f1:.6f}, best_raw_f1={best_val_f1_raw:.6f}"
+                )
             else:
                 no_improve_rounds += 1
                 print(f"[EARLY_STOP] no improvement rounds: {no_improve_rounds}/{early_stop_patience}")
-                if early_stop_patience > 0 and no_improve_rounds >= early_stop_patience:
+                if epoch < min_epoch_for_early_stop:
+                    print(
+                        f"[EARLY_STOP] early-stop gating active: "
+                        f"epoch {epoch} < min_epoch {min_epoch_for_early_stop}"
+                    )
+                elif early_stop_patience > 0 and no_improve_rounds >= early_stop_patience:
                     print(f"[EARLY_STOP] triggered at epoch {epoch}, restoring best epoch {best_epoch}")
                     break
             print("-------------------------------\n")
 
     if best_epoch >= 0:
         server.global_model.load_state_dict(best_global_state)
-        print(f"[EARLY_STOP] best model restored from epoch {best_epoch} (best_f1={best_val_f1:.6f})")
+        print(
+            f"[EARLY_STOP] best model restored from epoch {best_epoch} "
+            f"(best_smooth_f1={best_val_f1:.6f}, best_raw_f1={best_val_f1_raw:.6f})"
+        )
     else:
         best_epoch = args.epoch - 1
         print("[EARLY_STOP] no validation checkpoint captured, using final epoch model.")
@@ -600,9 +645,12 @@ if __name__ == '__main__':
         epoch=best_epoch,
         extra_info={
             "best_valid_f1": best_val_f1,
+            "best_valid_f1_raw": best_val_f1_raw,
             "early_stop_patience": early_stop_patience,
             "early_stop_min_delta": early_stop_min_delta,
-            "valid_interval": valid_interval
+            "valid_interval": valid_interval,
+            "min_epoch_for_early_stop": min_epoch_for_early_stop,
+            "valid_f1_smooth_window": valid_f1_smooth_window
         }
     )
         
