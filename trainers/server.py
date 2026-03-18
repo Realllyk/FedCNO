@@ -345,6 +345,7 @@ class CRD_server(Server):
             param.requires_grad = False
         self.diag_logger = None
         self.diag_meta = {}
+        self.last_client_stats = []
 
     def update_ema_model(self):
         """
@@ -360,6 +361,7 @@ class CRD_server(Server):
         updates_list: list of (client_id, delta_state_dict, q_k, n_k)
         """
         if not updates_list:
+            self.last_client_stats = []
             return
 
         # Legacy implementation (kept for reference, DO NOT DELETE):
@@ -513,6 +515,19 @@ class CRD_server(Server):
             f"tau_t={tau_t:.6f} | mean_r_tilde={mean_r_tilde:.6f} | "
             f"sum_r_tilde={sum_r_tilde:.6f} | sum_omega={sum_omega:.6f}"
         )
+
+        # Keep round-level stats for outer-loop diagnostics/logging.
+        self.last_client_stats = [
+            {
+                'client_id': stat.get('client_id', -1),
+                'q_k_t': float(stat.get('q_k_t', 0.0)),
+                'r_tilde_k_t': float(stat.get('r_tilde_k_t', 0.0)),
+                'omega_k_t': float(stat.get('omega_k_t', 0.0)),
+                'r_raw_k_t': float(stat.get('r_raw_k_t', 0.0)),
+                'r_hat_k_t': float(stat.get('r_hat_k_t', 0.0)),
+            }
+            for stat in client_stats
+        ]
 
         if self.diag_logger is not None:
             rows = []

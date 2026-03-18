@@ -82,10 +82,15 @@ if __name__ == '__main__':
         raise ValueError("MANDO only supports --vul tod in this project.")
     input_size, time_steps = 100, 300
 
-    if args.diff == True:
-        noise_rates = random.sample([0.2, 0.2, 0.3, 0.3], 4)
-    else:
-        noise_rates = [args.noise_rate] * 4
+    # DEPRECATED: --diff noise-rate path is kept only as historical reference.
+    # Reason: it hard-codes 4 clients and can cause mismatched behavior when client_num != 4.
+    # if args.diff == True:
+    #     noise_rates = random.sample([0.2, 0.2, 0.3, 0.3], 4)
+    # else:
+    #     noise_rates = [args.noise_rate] * 4
+    if args.diff:
+        print("[DEPRECATED] --diff is deprecated in Fed_LGV and will be ignored. Using uniform noise_rate for all clients.")
+    noise_rates = [args.noise_rate] * args.client_num
 
     # -------------------------------------------------------------------------
     # -------------------------------------------------------------------------

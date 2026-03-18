@@ -481,6 +481,34 @@ def parse_args():
         help='Run and save one global_test on test set right after warm-up stage; default disabled'
     )
 
+    parser.add_argument(
+        '--lgv_pseudo_threshold',
+        type=float,
+        default=0.7,
+        help='confidence threshold for Fed_LGV pseudo-label update (trust-score gate)'
+    )
+
+    parser.add_argument(
+        '--lgv_gate_type',
+        type=str,
+        default='max_prob',
+        choices=['max_prob', 'margin', 'entropy'],
+        help='Trust-score gate type for Fed_LGV pseudo-label update'
+    )
+
+    parser.add_argument(
+        '--lgv_use_triple_gate',
+        action='store_true',
+        help='Enable triple-gate for Fed_LGV pseudo-label update: changed-label AND improved-prob AND threshold gate'
+    )
+
+    parser.add_argument(
+        '--lgv_improve_margin',
+        type=float,
+        default=0.0,
+        help='Minimum required gain of pseudo-label max probability over old-label probability when triple-gate is enabled'
+    )
+
     # FedCRD Arguments
     parser.add_argument(
         '--lambda_q',
@@ -637,8 +665,8 @@ def parse_args():
     parser.add_argument(
         '--binary_threshold_grid',
         type=str,
-        default='0.30,0.35,0.40,0.45,0.50,0.55,0.60,0.65,0.70',
-        help='comma-separated threshold candidates for positive-class probability in binary classification'
+        default='0.50',
+        help='comma-separated threshold candidates for positive-class probability in binary classification; default fixed at 0.50 for fair comparison'
     )
 
     # FedELC Arguments

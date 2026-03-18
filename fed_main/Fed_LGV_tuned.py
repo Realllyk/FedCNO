@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from options import parse_args
 from data_processing.dataloader_manager import gen_lgv_ds, gen_test_dl, gen_cbgru_dl, gen_client_ds, gen_valid_dl
 from data_processing.preprocessing import compute_global_clusters, coordinate_sys_noise_clusters
@@ -129,16 +130,18 @@ class LGVServerPosF1(LGV_server):
         with open(log_file_path, "a") as f:
             f.write(f"{current_time},{avg_loss},{current_f1}\n")
 
-        if self.previous_f1 is not None:
-            if current_f1 > self.previous_f1:
-                self.global_weight += self.args.adjustment_factor
-            elif current_f1 < self.previous_f1:
-                self.global_weight -= self.args.adjustment_factor
-            self.global_weight = max(0.1, min(self.global_weight, 0.75))
-            print(
-                f"Auto-tuning (positive F1): {self.previous_f1:.4f} -> {current_f1:.4f}, "
-                f"New Global Weight: {self.global_weight:.4f}"
-            )
+        # [DISABLED] Auto-tune global_weight via validation F1 is commented out
+        # to avoid validation data leakage into the training decision loop.
+        # if self.previous_f1 is not None:
+        #     if current_f1 > self.previous_f1:
+        #         self.global_weight += self.args.adjustment_factor
+        #     elif current_f1 < self.previous_f1:
+        #         self.global_weight -= self.args.adjustment_factor
+        #     self.global_weight = max(0.1, min(self.global_weight, 0.75))
+        #     print(
+        #         f"Auto-tuning (positive F1): {self.previous_f1:.4f} -> {current_f1:.4f}, "
+        #         f"New Global Weight: {self.global_weight:.4f}"
+        #     )
         self.previous_f1 = current_f1
 
 
@@ -149,6 +152,16 @@ class FedLGVClientTuned(Fed_LGV_client):
     2) pseudo-label update is confidence-gated to avoid low-confidence noisy relabeling.
     3) keep consistency-score weighted loss behavior from original LGV flow.
     """
+    def __init__(self, args, criterion, model, dataset, client_id, global_weight, run_timestamp=None):
+        super().__init__(args, criterion, model, dataset, client_id, global_weight, run_timestamp)
+
+        # Shared TensorBoard run for all clients: one panel can overlay client_0..client_3 curves.
+        client_log_dir = os.path.dirname(self.log_file_path)
+        round_log_dir = os.path.dirname(client_log_dir)
+        shared_tb_dir = os.path.join(round_log_dir, "all_clients")
+        os.makedirs(shared_tb_dir, exist_ok=True)
+        self.tb_writer_shared = SummaryWriter(log_dir=shared_tb_dir)
+
     def train(self):
         # 1) Fix global snapshot for uncertainty estimation.
         self.fixed_global_model.load_state_dict(self.model.state_dict())
@@ -193,10 +206,44 @@ class FedLGVClientTuned(Fed_LGV_client):
             fused_prob = alpha * self.global_prob_labels + (1.0 - alpha) * self.local_prob_labels
             fused_prob = F.softmax(fused_prob, dim=1)
             pseudo_labels = torch.argmax(fused_prob, dim=-1)
-            confidence = torch.max(fused_prob, dim=1).values
-            conf_th = float(getattr(self.args, "dshar_pseudo_threshold", 0.8))
+            gate_type = str(getattr(self.args, "lgv_gate_type", "max_prob")).lower()
+
+            # Keep original max-prob gate and add switchable alternatives.
+            if gate_type == "margin":
+                sorted_prob, _ = torch.sort(fused_prob, dim=1, descending=True)
+                confidence = sorted_prob[:, 0] - sorted_prob[:, 1]
+            elif gate_type == "entropy":
+                entropy = -torch.sum(fused_prob * torch.log(fused_prob + 1e-8), dim=1)
+                max_entropy = np.log(fused_prob.shape[1])
+                confidence = 1.0 - (entropy / max_entropy)
+            else:
+                # Original behavior: trust score is fused pseudo-label max probability.
+                gate_type = "max_prob"
+                confidence = torch.max(fused_prob, dim=1).values
+
+            conf_th = float(
+                getattr(
+                    self.args,
+                    "lgv_pseudo_threshold",
+                    getattr(self.args, "confidence_thres", 0.8)
+                )
+            )
             old_labels = torch.tensor(self.dataset.labels, dtype=torch.long, device=self.device)
-            update_mask = confidence >= conf_th
+            # Triple-gate only updates labels when all checks pass:
+            # 1) pseudo label differs from current label,
+            # 2) pseudo max-prob beats old-label prob by configured margin,
+            # 3) trust score passes threshold.
+            use_triple_gate = bool(getattr(self.args, "lgv_use_triple_gate", False))
+            improve_margin = float(getattr(self.args, "lgv_improve_margin", 0.0))
+            base_mask = confidence >= conf_th
+            if use_triple_gate:
+                old_label_prob = fused_prob.gather(1, old_labels.unsqueeze(1)).squeeze(1)
+                pseudo_max_prob = torch.max(fused_prob, dim=1).values
+                changed_mask = pseudo_labels != old_labels
+                improve_mask = pseudo_max_prob >= (old_label_prob + improve_margin)
+                update_mask = base_mask & changed_mask & improve_mask
+            else:
+                update_mask = base_mask
             final_labels = torch.where(update_mask, pseudo_labels, old_labels)
             self.dataset.labels = final_labels.detach().cpu().numpy()
 
@@ -212,7 +259,16 @@ class FedLGVClientTuned(Fed_LGV_client):
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=self.args.weight_decay)
 
         # Keep acceptance ratio for diagnosis in logs/TensorBoard.
-        self.result = {"sample": len(self.dataset), "pseudo_accept_rate": float(update_mask.float().mean().item())}
+        self.result = {
+            "sample": len(self.dataset),
+            "pseudo_accept_rate": float(update_mask.float().mean().item()),
+            "pseudo_confidence_mean": float(confidence.mean().item()),
+            "pseudo_conf_threshold": conf_th,
+            "pseudo_gate_type": gate_type,
+            "pseudo_triple_gate": bool(getattr(self.args, "lgv_use_triple_gate", False)),
+            "pseudo_improve_margin": float(getattr(self.args, "lgv_improve_margin", 0.0)),
+            "pseudo_score_mean": float(confidence.mean().item()),
+        }
         self.model.train()
         for epoch in range(get_local_epoch(self.args)):
             self.result["loss"] = 0.0
@@ -248,7 +304,13 @@ class FedLGVClientTuned(Fed_LGV_client):
 
             avg_loss = self.result["loss"] / len(dl)
             self.tb_writer.add_scalar("loss/train", avg_loss, self.tb_global_step)
+            self.tb_writer_shared.add_scalar(f"loss/train_client_{self.client_id}", avg_loss, self.tb_global_step)
             self.tb_writer.add_scalar("pseudo/accept_rate", self.result["pseudo_accept_rate"], self.tb_global_step)
+            self.tb_writer_shared.add_scalar(
+                f"pseudo/accept_rate_client_{self.client_id}",
+                self.result["pseudo_accept_rate"],
+                self.tb_global_step,
+            )
             with open(self.log_file_path, "a") as f:
                 f.write(f"{self.tb_global_step},{epoch},{avg_loss}\n")
             self.tb_global_step += 1

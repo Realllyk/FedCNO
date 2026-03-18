@@ -24,6 +24,33 @@ from sklearn.metrics import confusion_matrix
 from utils.crd_diag_logger import CRDDiagLogger
 
 
+def _env_flag(name, default=False):
+    raw = os.environ.get(name, None)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_int(name, default):
+    raw = os.environ.get(name, None)
+    if raw is None:
+        return int(default)
+    try:
+        return int(raw)
+    except Exception:
+        return int(default)
+
+
+def _env_float(name, default):
+    raw = os.environ.get(name, None)
+    if raw is None:
+        return float(default)
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
 def train_warmup_client(client_id, args, global_model, criterion, dataset, run_timestamp):
     """
     Train one client for warm-up stage (FedAvg style).
@@ -250,6 +277,20 @@ if __name__ == '__main__':
         f"crd_min_delta={float(getattr(args, 'crd_early_stop_min_delta', 1e-4))}"
     )
 
+    # Guard-stop rule (env driven) to avoid premature manual interruption:
+    # stop only when valid has stagnated and optimization signals flatten.
+    guard_enabled = _env_flag("CRD_GUARD_ENABLED", False)
+    guard_min_epoch = _env_int("CRD_GUARD_MIN_EPOCH", 12)
+    guard_no_improve_rounds = _env_int("CRD_GUARD_NO_IMPROVE", 8)
+    guard_window = max(2, _env_int("CRD_GUARD_WINDOW", 5))
+    guard_min_loss_drop = _env_float("CRD_GUARD_MIN_LOSS_DROP", 0.003)
+    guard_min_omega_spread_change = _env_float("CRD_GUARD_MIN_OMEGA_SPREAD_CHANGE", 0.003)
+    print(
+        f"[CRD_GUARD] enabled={guard_enabled}, min_epoch={guard_min_epoch}, "
+        f"no_improve={guard_no_improve_rounds}, window={guard_window}, "
+        f"min_loss_drop={guard_min_loss_drop}, min_omega_change={guard_min_omega_spread_change}"
+    )
+
     # Setup Random Seeds
     if args.diff == True:
         noise_rates = random.sample([0.2, 0.2, 0.3, 0.3], 4)
@@ -446,6 +487,8 @@ if __name__ == '__main__':
     crd_best_epoch = -1
     crd_no_improve_rounds = 0
     crd_best_global_state = copy.deepcopy(server.global_model.state_dict())
+    crd_epoch_avg_loss_hist = []
+    crd_omega_spread_hist = []
 
     # Training Loop
     for epoch in range(args.epoch):
@@ -453,6 +496,7 @@ if __name__ == '__main__':
         server.initialize_epoch_updates(epoch) 
 
         updates_list = [] # Store (client_id, delta, q_k, n_k)
+        epoch_client_losses = []
         
         futures = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
@@ -462,6 +506,7 @@ if __name__ == '__main__':
             for future in futures:
                 client_id, delta, q_k, num_samples, result, loss = future.result()
                 updates_list.append((client_id, delta, q_k, num_samples))
+                epoch_client_losses.append(float(loss))
                 
                 print(f"Client {client_id}: Loss={loss:.4f}, Reliability(q_k)={q_k:.4f}")
                 
@@ -479,6 +524,15 @@ if __name__ == '__main__':
                     f"r_tilde={float(stat['r_tilde_k_t']):.4f} "
                     f"omega={float(stat['omega_k_t']):.4f}"
                 )
+        if epoch_client_losses:
+            epoch_avg_loss = float(np.mean(epoch_client_losses))
+            crd_epoch_avg_loss_hist.append(epoch_avg_loss)
+            print(f"[CRD_LOSS] epoch={epoch} avg_client_loss={epoch_avg_loss:.6f}")
+        if getattr(server, 'last_client_stats', None):
+            omegas = [float(s.get('omega_k_t', 0.0)) for s in server.last_client_stats]
+            omega_spread = (max(omegas) - min(omegas)) if omegas else 0.0
+            crd_omega_spread_hist.append(float(omega_spread))
+            print(f"[CRD_RELIABILITY] epoch={epoch} omega_spread={omega_spread:.6f}")
         
         # Validation
         if epoch % crd_valid_interval == 0 or epoch == args.epoch - 1:
@@ -508,12 +562,61 @@ if __name__ == '__main__':
                          f"[CRD_EARLY_STOP] no improvement rounds: "
                          f"{crd_no_improve_rounds}/{crd_early_stop_patience}"
                      )
+
+                     # Guard-stop: valid stagnation + weak optimization signal + stable reliability spread.
+                     if (
+                         guard_enabled
+                         and epoch >= guard_min_epoch
+                         and crd_no_improve_rounds >= guard_no_improve_rounds
+                         and len(crd_epoch_avg_loss_hist) >= guard_window
+                         and len(crd_omega_spread_hist) >= guard_window
+                     ):
+                         recent_loss_drop = crd_epoch_avg_loss_hist[-guard_window] - crd_epoch_avg_loss_hist[-1]
+                         recent_omega_change = abs(
+                             crd_omega_spread_hist[-1] - crd_omega_spread_hist[-guard_window]
+                         )
+                         print(
+                             f"[CRD_GUARD] loss_drop({guard_window})={recent_loss_drop:.6f}, "
+                             f"omega_change({guard_window})={recent_omega_change:.6f}"
+                         )
+                         if (
+                             recent_loss_drop < guard_min_loss_drop
+                             and recent_omega_change < guard_min_omega_spread_change
+                         ):
+                             print(
+                                 f"[CRD_GUARD] triggered at epoch {epoch}: "
+                                 f"valid stagnation + low loss gain + low reliability change."
+                             )
+                             break
+
                      if crd_early_stop_patience > 0 and crd_no_improve_rounds >= crd_early_stop_patience:
                          print(
                              f"[CRD_EARLY_STOP] triggered at epoch {epoch}, "
                              f"restoring best epoch {crd_best_epoch}"
                          )
                          break
+
+    # Keep both checkpoints for comparison:
+    # - last_epoch model (before restore)
+    # - best_valid model (after restore)
+    crd_last_global_state = copy.deepcopy(server.global_model.state_dict())
+
+    print("\n--- Final Testing (Last Epoch) ---")
+    server.global_model.load_state_dict(crd_last_global_state)
+    global_test(
+        server.global_model,
+        test_dl,
+        criterion,
+        args,
+        f"Fed_CRD_Tuned",
+        run_timestamp=run_timestamp,
+        tag='test_last',
+        extra_info={
+            'checkpoint': 'last_epoch',
+            'best_epoch': int(crd_best_epoch),
+            'best_valid_f1': float(crd_best_val_f1),
+        }
+    )
 
     if crd_best_epoch >= 0:
         server.global_model.load_state_dict(crd_best_global_state)
@@ -524,9 +627,21 @@ if __name__ == '__main__':
     else:
         print("[CRD_EARLY_STOP] no CRD validation checkpoint captured, using final CRD model.")
             
-    # Final Test (argmax baseline)
-    print("\n--- Final Testing ---")
-    global_test(server.global_model, test_dl, criterion, args, f"Fed_CRD_Tuned", run_timestamp=run_timestamp)
+    print("\n--- Final Testing (Best Valid Restore) ---")
+    global_test(
+        server.global_model,
+        test_dl,
+        criterion,
+        args,
+        f"Fed_CRD_Tuned",
+        run_timestamp=run_timestamp,
+        tag='test_best',
+        extra_info={
+            'checkpoint': 'best_valid_restore' if crd_best_epoch >= 0 else 'last_epoch_fallback',
+            'best_epoch': int(crd_best_epoch),
+            'best_valid_f1': float(crd_best_val_f1),
+        }
+    )
 
     # Optional threshold tuning:
     # 1) select best threshold on validation set by F1

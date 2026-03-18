@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 
-from trainers.client import Fed_CRD_client
+from trainers.client import Fed_CRD_client, _move_to_device, lgv_mando_collate_fn
 
 
 class Fed_CRD_client_NoAmb(Fed_CRD_client):
@@ -27,11 +27,13 @@ class Fed_CRD_client_NoAmb(Fed_CRD_client):
         name_to_idx = {name: i for i, name in enumerate(self.dataset.names)}
         indices = [name_to_idx[name] for name in self.reduced_names]
         reduced_ds = Subset(self.dataset, indices)
+        collate_fn = lgv_mando_collate_fn if self.args.model_type == "MANDO" else None
         dl = DataLoader(
             reduced_ds,
             batch_size=self.args.batch,
             shuffle=False,
             pin_memory=True,
+            collate_fn=collate_fn,
         )
 
         all_probs = []
@@ -45,7 +47,8 @@ class Fed_CRD_client_NoAmb(Fed_CRD_client):
                 else:
                     raise ValueError(f"Unexpected batch length={len(batch)}")
 
-                x1, x2 = x1.to(self.device), x2.to(self.device)
+                x1 = _move_to_device(x1, self.device)
+                x2 = _move_to_device(x2, self.device)
                 outputs = anchor_model(x1, x2)
                 probs = F.softmax(outputs, dim=1)
                 all_probs.append(probs)

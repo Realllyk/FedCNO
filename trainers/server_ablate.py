@@ -78,7 +78,7 @@ class CRD_server_NoClip(CRD_server):
 
             denom = (norm_delta_k_t * norm_delta_bar_t) + crd_eps
             cos_sim = (torch.dot(delta_k_t_vec, delta_bar_t_vec).item()) / denom
-            r_raw_k_t = cos_sim * np.exp(-self.lambda_crd * norm_delta_k_t)
+            r_raw_k_t = cos_sim * np.exp(-self.lambda_agg * norm_delta_k_t)
             r_hat_k_t = q_k_t + self.alpha_crd * r_raw_k_t
 
             sigma_k_t = torch.nn.functional.softplus(

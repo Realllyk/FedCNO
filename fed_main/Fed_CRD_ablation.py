@@ -19,7 +19,7 @@ from data_processing.preprocessing import coordinate_sys_noise_clusters
 from global_test import global_test
 from models.model_factory import build_model
 from options import parse_args
-from trainers.client import Fed_CRD_client
+from trainers.client import Fed_Avg_client, Fed_CRD_client
 from trainers.client_ablate import Fed_CRD_client_NoAmb
 from trainers.server import CRD_server
 from trainers.server_ablate import CRD_server_NoCal_FedAvg, CRD_server_NoClip, CRD_server_OnlyClip
@@ -85,6 +85,34 @@ def train_crd_client(client_id, client, global_model, ema_model):
     return client_id, delta, q_k, num_samples, result, loss
 
 
+def train_warmup_client(client_id, args, global_model, criterion, dataset, run_timestamp):
+    """
+    Train one client for warm-up stage (FedAvg style).
+    """
+    warmup_args = copy.deepcopy(args)
+    warmup_args.lab_name = "Fed_Avg"
+    client = Fed_Avg_client(
+        warmup_args,
+        criterion,
+        None,
+        dataset,
+        client_id=client_id,
+        run_timestamp=run_timestamp,
+    )
+    client.model = copy.deepcopy(global_model)
+    client.train()
+
+    weights = copy.deepcopy(client.get_parameters())
+    num_samples = client.result["sample"]
+    result = client.result
+
+    del client
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    return client_id, weights, num_samples, result
+
+
 if __name__ == "__main__":
     args = parse_args()
     if args.model_type == "MANDO" and args.vul != "tod":
@@ -102,6 +130,8 @@ if __name__ == "__main__":
     )
     print(f"Training on device: {args.device}")
 
+    # Deprecated: diff mode still uses the historical 4-client noise template.
+    # Keep behavior unchanged for backward compatibility in old experiments.
     if args.diff is True:
         noise_rates = random.sample([0.2, 0.2, 0.3, 0.3], 4)
     else:
@@ -166,6 +196,94 @@ if __name__ == "__main__":
 
     test_dl = gen_test_dl(args.model_type, args.vul, data_dir=args.data_dir)
     valid_dl = gen_valid_dl(args.model_type, args.vul, data_dir=args.data_dir)
+
+    # Warm-up Stage (aligned with fed_main/Fed_CRD.py)
+    warmup_valid_interval = max(1, int(getattr(args, "warmup_valid_interval", 1)))
+    warmup_early_stop_patience = int(getattr(args, "warmup_early_stop_patience", 0))
+    warmup_early_stop_min_delta = float(getattr(args, "warmup_early_stop_min_delta", 1e-4))
+    warmup_best_val_f1 = -1.0
+    warmup_best_epoch = -1
+    warmup_no_improve_rounds = 0
+    warmup_best_global_state = copy.deepcopy(server.global_model.state_dict())
+    original_lab_name = args.lab_name
+    args.lab_name = "Fed_Avg"
+
+    for epoch in range(args.warm_up_epoch):
+        print(f"Warm Up Epoch {epoch}: ")
+        server.initialize_epoch_updates(epoch)
+
+        futures = []
+        max_workers = int(getattr(args, "num_workers", 4))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for client_id in range(args.client_num):
+                futures.append(
+                    executor.submit(
+                        train_warmup_client,
+                        client_id,
+                        args,
+                        server.global_model,
+                        criterion,
+                        train_ds[client_id],
+                        run_timestamp,
+                    )
+                )
+
+            for future in futures:
+                client_id, weights, num_samples, result = future.result()
+                server.save_train_updates(weights, num_samples, result)
+                print(f"warmup client:{client_id}")
+                print(f"loss is {result['loss']}")
+
+        server.average_weights()
+
+        if epoch % warmup_valid_interval == 0:
+            print(f"\n--- WarmUp Validation at Epoch {epoch} ---")
+            warmup_valid_result = global_test(
+                server.global_model,
+                valid_dl,
+                criterion,
+                args,
+                "WarmUp_FedAvg_CRD",
+                run_timestamp=run_timestamp,
+                save_result=True,
+                tag="valid",
+                epoch=epoch,
+            )
+            current_warmup_f1 = warmup_valid_result["F1 score"]
+            if current_warmup_f1 > (warmup_best_val_f1 + warmup_early_stop_min_delta):
+                warmup_best_val_f1 = current_warmup_f1
+                warmup_best_epoch = epoch
+                warmup_no_improve_rounds = 0
+                warmup_best_global_state = copy.deepcopy(server.global_model.state_dict())
+                print(f"[WARMUP_EARLY_STOP] improved at epoch {epoch}, best_f1={warmup_best_val_f1:.6f}")
+            else:
+                warmup_no_improve_rounds += 1
+                print(
+                    f"[WARMUP_EARLY_STOP] no improvement rounds: "
+                    f"{warmup_no_improve_rounds}/{warmup_early_stop_patience}"
+                )
+                if warmup_early_stop_patience > 0 and warmup_no_improve_rounds >= warmup_early_stop_patience:
+                    print(f"[WARMUP_EARLY_STOP] triggered at epoch {epoch}, restoring best epoch {warmup_best_epoch}")
+                    break
+            print("-----------------------------------------\n")
+
+    if warmup_best_epoch >= 0:
+        server.global_model.load_state_dict(warmup_best_global_state)
+        print(
+            f"[WARMUP_EARLY_STOP] best warmup model restored from epoch {warmup_best_epoch} "
+            f"(best_f1={warmup_best_val_f1:.6f})"
+        )
+    else:
+        print("[WARMUP_EARLY_STOP] no warmup validation checkpoint captured, using final warmup model.")
+
+    args.lab_name = original_lab_name
+    print("-----------------------------------------------------------\n")
+    if args.exit_after_warmup_test:
+        print("[CONTROL] --exit_after_warmup_test enabled, exiting after warm-up stage.")
+        sys.exit(0)
+
+    # Keep EMA anchor consistent with warm-up updated global model.
+    server.ema_model.load_state_dict(copy.deepcopy(server.global_model.state_dict()))
 
     print("Initializing Clients...")
     clients = []
