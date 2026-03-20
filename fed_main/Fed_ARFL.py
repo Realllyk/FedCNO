@@ -42,9 +42,6 @@ if __name__ == '__main__':
         torch.cuda.manual_seed(args.seed)
         torch.cuda.manual_seed_all(args.seed)
 
-    # -------------------------------------------------------------------------
-    # 绯荤粺鎬у櫔澹板崗璋?(Systemic Noise Coordination)
-    # -------------------------------------------------------------------------
     assigned_clusters_dict, global_cluster_map = coordinate_sys_noise_clusters(
         args.client_num, 
         args.vul, 

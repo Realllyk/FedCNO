@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
             "(model_type, noise_type, noise_rate, vul)."
         )
     )
-    parser.add_argument("--base_dir", type=Path, required=True, help="Base result directory.")
+    parser.add_argument("--base_dir", type=str, required=True, help="Base result directory.")
     parser.add_argument("--model_type", type=str, required=True, help="Model type, e.g., CBGRU/CGE/MANDO.")
     parser.add_argument("--noise_type", type=str, required=True, help="Noise type, e.g., non_noise/sys_noise.")
     parser.add_argument("--noise_rate", type=float, required=True, help="Noise rate, e.g., 0.3.")
@@ -124,10 +124,34 @@ def lab_sort_key(name: str) -> Tuple[int, str]:
     return (1, norm)
 
 
+def resolve_base_dir(raw_base_dir: str) -> Path:
+    """Auto-resolve base_dir with fallback logic for relative paths."""
+    raw_path = Path(raw_base_dir)
+    if raw_path.is_absolute():
+        return raw_path
+
+    script_dir = Path(__file__).resolve().parent
+    repo_root_guess = script_dir.parent
+
+    candidates: List[Path] = [
+        raw_path,
+        Path.cwd() / raw_path,
+        script_dir / raw_path,
+        script_dir.parent / raw_path,
+        repo_root_guess / raw_path,
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    return (Path.cwd() / raw_path).resolve()
+
+
 def main() -> None:
     args = parse_args()
 
-    base_dir = args.base_dir
+    base_dir = resolve_base_dir(args.base_dir)
     if not base_dir.exists():
         raise FileNotFoundError(f"base_dir not found: {base_dir}")
 
@@ -158,7 +182,7 @@ def main() -> None:
 
     rows.sort(key=lambda x: lab_sort_key(x["lab_name"]))
 
-    output_dir = Path("graduate_final_result") / "analysis_csv" / "summary"
+    output_dir = base_dir / "analysis_csv" / "summary"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rate_tag = f"{args.noise_rate:.2f}".rstrip("0").rstrip(".")

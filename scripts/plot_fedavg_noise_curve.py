@@ -40,6 +40,11 @@ def parse_args() -> argparse.Namespace:
         default=",".join(str(x) for x in DEFAULT_NOISE_RATES),
         help="Comma-separated noise rates, e.g., 0.0,0.05,0.1,0.15,0.2,0.25,0.3.",
     )
+    parser.add_argument(
+        "--from_csv",
+        action="store_true",
+        help="If set, read existing CSV files and draw figure directly without recomputing from JSON.",
+    )
     return parser.parse_args()
 
 
@@ -167,38 +172,52 @@ def write_metric_csv(rows: List[Dict], metric: str, csv_out: Path) -> None:
             )
 
 
-def plot_metrics_figure(rows: List[Dict], noise_rates: List[float], fig_out: Path, args: argparse.Namespace) -> None:
-    metrics = ["acc", "precision", "f1", "recall"]
-    metric_titles = {
-        "acc": "Accuracy(%)",
-        "precision": "Precision(%)",
-        "f1": "F1 Score(%)",
-        "recall": "Recall(%)",
+def load_rows_from_csv(args: argparse.Namespace, noise_rates: List[float]) -> List[Dict]:
+    csv_dir, _ = resolve_output_dirs(args)
+    base_rows: Dict[str, Dict] = {
+        to_rate_tag(rate): {
+            "noise_rate": rate,
+            "used_runs": 0,
+            "acc": None,
+            "precision": None,
+            "recall": None,
+            "f1": None,
+            "result_file": "",
+        }
+        for rate in noise_rates
     }
-    x = [r["noise_rate"] * 100 for r in rows]
-    x_ticks = [r * 100 for r in noise_rates]
-    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
 
-    for ax, metric in zip(axes, metrics):
-        y = [safe_float(r[metric]) for r in rows]
-        ax.plot(x, y, marker="o")
-        ax.set_title(metric_titles[metric])
-        ax.set_xlabel("Noise Level(%)")
-        ax.set_ylabel("Matric Value(%)")
-        ax.set_xticks(x_ticks)
-        ax.set_ylim(0.0, 1.0)
-        # Keep each subplot coordinate box in 1:1 shape.
-        ax.set_box_aspect(1)
+    for metric in ["acc", "precision", "recall", "f1"]:
+        csv_file = csv_dir / f"{args.dataset}_{metric}_last{args.last_n}.csv"
+        if not csv_file.exists():
+            raise FileNotFoundError(f"CSV file not found: {csv_file}")
 
-    fig.tight_layout()
-    fig.savefig(fig_out, dpi=200, bbox_inches="tight")
-    plt.close(fig)
+        with csv_file.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rate = safe_float(row.get("noise_rate"))
+                if rate is None:
+                    continue
+                rate_key = to_rate_tag(rate)
+                if rate_key not in base_rows:
+                    continue
+
+                metric_value = safe_float(row.get(metric))
+                if metric_value is not None:
+                    base_rows[rate_key][metric] = metric_value
+
+                used_runs = safe_float(row.get("used_runs"))
+                if used_runs is not None:
+                    base_rows[rate_key]["used_runs"] = max(base_rows[rate_key]["used_runs"], int(used_runs))
+
+                result_file = str(row.get("result_file", "") or "")
+                if result_file:
+                    base_rows[rate_key]["result_file"] = result_file
+
+    return [base_rows[to_rate_tag(rate)] for rate in noise_rates]
 
 
-def main() -> None:
-    args = parse_args()
-    noise_rates = [float(x.strip()) for x in args.noise_rates.split(",") if x.strip()]
-
+def collect_rows_from_json(args: argparse.Namespace, noise_rates: List[float]) -> List[Dict]:
     root = args.base_dir / "Fed_Avg" / args.model_type / args.noise_type
     if not root.exists():
         raise FileNotFoundError(f"Config path not found: {root}")
@@ -248,14 +267,55 @@ def main() -> None:
             }
         )
 
+    return rows
+
+
+def plot_metrics_figure(rows: List[Dict], noise_rates: List[float], fig_out: Path, args: argparse.Namespace) -> None:
+    metrics = ["acc", "precision", "f1", "recall"]
+    metric_titles = {
+        "acc": "Accuracy(%)",
+        "precision": "Precision(%)",
+        "f1": "F1 Score(%)",
+        "recall": "Recall(%)",
+    }
+    x = [r["noise_rate"] * 100 for r in rows]
+    x_ticks = [r * 100 for r in noise_rates]
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+
+    for ax, metric in zip(axes, metrics):
+        y = [safe_float(r[metric]) * 100 if safe_float(r[metric]) is not None else None for r in rows]
+        ax.plot(x, y, marker="o")
+        ax.set_title(metric_titles[metric])
+        ax.set_xlabel("Noise Level(%)")
+        ax.set_ylabel("Metric Value(%)")
+        ax.set_xticks(x_ticks)
+        ax.set_ylim(0.0, 100.0)
+        # Keep each subplot coordinate box in 1:1 shape.
+        ax.set_box_aspect(1)
+
+    fig.tight_layout()
+    fig.savefig(fig_out, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def main() -> None:
+    args = parse_args()
+    noise_rates = [float(x.strip()) for x in args.noise_rates.split(",") if x.strip()]
+
+    if args.from_csv:
+        rows = load_rows_from_csv(args, noise_rates)
+    else:
+        rows = collect_rows_from_json(args, noise_rates)
+
     csv_dir, fig_dir = resolve_output_dirs(args)
     csv_dir.mkdir(parents=True, exist_ok=True)
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    for metric in ["acc", "precision", "recall", "f1"]:
-        csv_out = csv_dir / f"{args.dataset}_{metric}_last{args.last_n}.csv"
-        write_metric_csv(rows, metric, csv_out)
-        print(f"[OK] CSV saved: {csv_out}")
+    if not args.from_csv:
+        for metric in ["acc", "precision", "recall", "f1"]:
+            csv_out = csv_dir / f"{args.dataset}_{metric}_last{args.last_n}.csv"
+            write_metric_csv(rows, metric, csv_out)
+            print(f"[OK] CSV saved: {csv_out}")
 
     fig_out = fig_dir / f"{args.dataset}_metrics_last{args.last_n}.png"
     plot_metrics_figure(rows, noise_rates, fig_out, args)

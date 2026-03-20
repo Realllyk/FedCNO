@@ -104,10 +104,15 @@ if __name__ == '__main__':
         raise ValueError("MANDO only supports --vul tod in this project.")
     input_size, time_steps = 100, 300
 
-    if args.diff == True:
-        noise_rates = random.sample([0.2, 0.2, 0.3, 0.3], 4)
-    else:
-        noise_rates = [args.noise_rate] * 4
+    # DEPRECATED: --diff noise-rate path is kept only as historical reference.
+    # Reason: it hard-codes 4 clients and can cause mismatched behavior when client_num != 4.
+    # if args.diff == True:
+    #     noise_rates = random.sample([0.2, 0.2, 0.3, 0.3], 4)
+    # else:
+    #     noise_rates = [args.noise_rate] * 4
+    if args.diff:
+        print("[DEPRECATED] --diff is deprecated in Fed_LGV_ablation and will be ignored. Using uniform noise_rate for all clients.")
+    noise_rates = [args.noise_rate] * args.client_num
 
     # -------------------------------------------------------------------------
     # -------------------------------------------------------------------------
@@ -159,12 +164,21 @@ if __name__ == '__main__':
     # 3. 其他类型: 默认使用 [1.0, 1.0] 或 [1.0, 1.5] 作为保守策略。
     # 3. 其他类型: 默认使用 [1.0, 1.0] 或 [1.0, 1.5] 作为保守策略。
     
-    if args.vul == 'reentrancy':
-        class_weights = torch.tensor([1.0, 1.0]).to(args.device) # 重入漏洞暂时不加权，或者微调
-    elif args.vul == 'timestamp':
-        class_weights = torch.tensor([1.2, 1.5]).to(args.device) # 稍微增加Negative权重以控制误报，降低Positive权重以减少FPR=1.0
+    vul_label_stats = {
+        'reentrancy': (656, 871),
+        'timestamp': (187, 199),
+        'tod': (717, 196),
+    }
+    if args.vul in vul_label_stats:
+        n0, n1 = vul_label_stats[args.vul]
+        total = float(n0 + n1)
+        class_weights = torch.tensor(
+            [total / (2.0 * n0), total / (2.0 * n1)],
+            dtype=torch.float32,
+            device=args.device
+        )
     else:
-        class_weights = torch.tensor([1.0, 1.0]).to(args.device) # 重入漏洞暂时不加权，或者微调
+        class_weights = torch.tensor([1.0, 1.0], dtype=torch.float32, device=args.device)
 
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     if args.model_type == "CBGRU":
@@ -202,7 +216,7 @@ if __name__ == '__main__':
 
         # 并行热身训练
         futures = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
             for client_id in range(args.client_num):
                 futures.append(executor.submit(train_warmup_client, client_id, args, server.global_model, criterion, train_ds[client_id], run_timestamp))
             
@@ -232,7 +246,7 @@ if __name__ == '__main__':
         f"WarmUp_FedAvg", 
         reduction='mean', 
         run_timestamp=run_timestamp, 
-        save_result=True,
+        save_result=False,
         tag='test'
     )
     args.lab_name = original_lab_name
@@ -318,7 +332,7 @@ if __name__ == '__main__':
 
         # 并行正式训练
         futures = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
             # for client_id in selected_indices:
             for client_id in range(args.client_num):
                 # 提交任务
